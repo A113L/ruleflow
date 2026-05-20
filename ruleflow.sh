@@ -1,12 +1,63 @@
 #!/bin/bash
 # =============================================================================
-# INTERACTIVE HASHCAT RULE PIPELINE 2026
+# INTERACTIVE HASHCAT RULE PIPELINE 2026 (with Auto-Download)
 # =============================================================================
 echo -e "\033[1;36m"
 echo "╔════════════════════════════════════════════════════════════════╗"
 echo "║ INTERACTIVE HASHCAT RULE PIPELINE v2026                        ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo -e "\033[0m"
+
+# ====================== DEPENDENCY CHECK ======================
+echo -e "\n\033[1;33m=== Checking Required Scripts ===\033[0m"
+
+MISSING=()
+if [ ! -f "rulest_v2.py" ]; then
+    MISSING+=("rulest_v2.py")
+fi
+if [ ! -f "concentrator.py" ]; then
+    MISSING+=("concentrator.py")
+fi
+if [ ! -f "ranker.py" ]; then
+    MISSING+=("ranker.py")
+fi
+
+if [ ${#MISSING[@]} -gt 0 ]; then
+    echo -e "\033[1;31mMissing scripts: ${MISSING[*]}\033[0m"
+    read -p "Do you want to download the missing scripts? (y/n): " CONFIRM_DL
+    if [[ "$CONFIRM_DL" =~ ^[Yy]$ ]]; then
+        for script in "${MISSING[@]}"; do
+            case "$script" in
+                rulest_v2.py)
+                    URL="https://raw.githubusercontent.com/A113L/rulest/refs/heads/main/rulest_v2.py"
+                    ;;
+                concentrator.py)
+                    URL="https://raw.githubusercontent.com/A113L/concentrator/refs/heads/main/concentrator.py"
+                    ;;
+                ranker.py)
+                    URL="https://raw.githubusercontent.com/A113L/ranker/refs/heads/main/ranker.py"
+                    ;;
+                *)
+                    echo -e "\033[1;31mUnknown script: $script\033[0m"
+                    continue
+                    ;;
+            esac
+            echo -e "\033[1;34mDownloading $script from $URL ...\033[0m"
+            wget -q --show-progress "$URL" -O "$script"
+            if [ $? -eq 0 ]; then
+                echo -e "\033[1;32m✓ $script downloaded successfully.\033[0m"
+            else
+                echo -e "\033[1;31m✗ Failed to download $script. Please check your network.\033[0m"
+                exit 1
+            fi
+        done
+    else
+        echo -e "\033[1;31mCannot continue without required scripts. Exiting.\033[0m"
+        exit 1
+    fi
+else
+    echo -e "\033[1;32mAll required scripts are present.\033[0m"
+fi
 
 # ====================== INPUT FILES ======================
 echo -e "\n\033[1;33m=== Step 1: Input Files ===\033[0m"
