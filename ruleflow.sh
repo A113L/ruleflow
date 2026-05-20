@@ -45,7 +45,7 @@ read -p "Use legacy (exhaustive) ranker mode? (y/n) [n]: " LEGACY_CHOICE
 LEGACY_CHOICE=${LEGACY_CHOICE,,}
 
 # ====================== DEFAULT PARAMETERS ======================
-DEPTH=3
+DEPTH=6
 GEN_GENERATIONS=300
 GENETIC_POP=600
 TARGET_HOURS=2.0
@@ -53,22 +53,22 @@ TARGET_HOURS=2.0
 # Rulest Advanced
 BLOOM_MB=800
 STAGE0_PROCESSES=0
-TOKEN_STRIP_MAX_PREFIX=4
-TOKEN_STRIP_MAX_SUFFIX=4
+TOKEN_STRIP_MAX_PREFIX=6
+TOKEN_STRIP_MAX_SUFFIX=6
 
 # Ranker parameters (MAB only, used only if legacy is NOT chosen)
-RANKER_K=18000          # will be overridden by mode presets
+RANKER_K=25000          # will be overridden by mode presets
 RANKER_MAB_SCREENING=4
 RANKER_MAB_FINAL=8
 RANKER_PRESET="medium_memory"
 
 if [ "$MODE" = "maximum" ]; then
-    RANKER_K=25000
+    RANKER_K=50000
     RANKER_MAB_SCREENING=5
     RANKER_MAB_FINAL=10
     RANKER_PRESET="high_memory"
 elif [ "$MODE" = "balanced" ]; then
-    RANKER_K=18000
+    RANKER_K=25000
     RANKER_MAB_SCREENING=4
     RANKER_MAB_FINAL=8
     RANKER_PRESET="medium_memory"
