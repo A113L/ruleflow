@@ -257,7 +257,7 @@ python ranker.py \
 ```bash
 # 1. Prepare your files
 ls -la
-# base.txt  target_wordlist.txt  cracked.txt  pipeline.sh
+# base.txt  target_wordlist.txt  cracked.txt  pipeline.sh rulest_v2.py concentrator.py ranker.py
 
 # 2. Run the pipeline
 ./pipeline.sh
