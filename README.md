@@ -85,8 +85,8 @@ The following scripts must be present in the working directory:
 
 ```bash
 # Clone or download the repository
-git clone https://github.com/A113L/pipeline.git
-cd pipeline
+git clone https://github.com/A113L/ruleflow.git
+cd ruleflow
 
 wget https://raw.githubusercontent.com/A113L/rulest/refs/heads/main/rulest_v2.py
 wget https://raw.githubusercontent.com/A113L/concentrator/refs/heads/main/concentrator.py
@@ -95,9 +95,9 @@ wget https://github.com/A113L/ranker/raw/refs/heads/main/ranker.py
 # Ensure Python scripts are executable
 chmod +x rulest_v2.py concentrator.py ranker.py
 
-# Run the pipeline
-chmod +x pipeline.sh
-./pipeline.sh
+# Run the ruleflow
+chmod +x ruleflow.sh
+./ruleflow.sh
 ```
 
 ---
@@ -109,7 +109,7 @@ chmod +x pipeline.sh
 Simply run the script and follow the interactive prompts:
 
 ```bash
-./pipeline.sh
+./ruleflow.sh
 ```
 
 You will be prompted for:
