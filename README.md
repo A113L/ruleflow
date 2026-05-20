@@ -217,11 +217,11 @@ python ranker.py \
 
 | Parameter | Maximum | Balanced | Fast |
 |-----------|---------|----------|------|
-| `RANKER_K` | 25000 | 18000 | 12000 |
+| `RANKER_K` | 50000 | 25000 | 12000 |
 | `MAB_SCREENING` | 5 | 4 | 3 |
 | `MAB_FINAL` | 10 | 8 | 5 |
 | `PRESET` | `high_memory` | `medium_memory` | `low_memory` |
-| `DEPTH` | 3* | 3 | 3 |
+| `DEPTH` | 6* | 6 | 6 |
 | `GEN_GENERATIONS` | 300* | 300 | 300 |
 | `GENETIC_POP` | 600* | 600 | 600 |
 
