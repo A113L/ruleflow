@@ -222,8 +222,8 @@ python ranker.py \
 | `MAB_FINAL` | 10 | 8 | 5 |
 | `PRESET` | `high_memory` | `medium_memory` | `low_memory` |
 | `DEPTH` | 3* | 3 | 3 |
-| `GEN_GENERATIONS` | 60* | 60 | 60 |
-| `GENETIC_POP` | 200* | 200 | 200 |
+| `GEN_GENERATIONS` | 300* | 300 | 300 |
+| `GENETIC_POP` | 600* | 600 | 600 |
 
 *\*Customizable in Maximum mode*
 
