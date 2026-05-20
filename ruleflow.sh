@@ -41,8 +41,8 @@ esac
 
 # ====================== DEFAULT PARAMETERS ======================
 DEPTH=3
-GEN_GENERATIONS=60
-GENETIC_POP=200
+GEN_GENERATIONS=300
+GENETIC_POP=600
 TARGET_HOURS=2.0
 
 # Rulest Advanced
@@ -114,7 +114,7 @@ python rulest_v2.py "$BASE_WORDLIST" "$TARGET_WORDLIST" \
 echo -e "\n\033[1;34m[2/3] Concentrator...\033[0m"
 python concentrator.py -p stage1_raw.rule \
     --output_base_name stage2_cleaned \
-    --output-format line
+    --output-format expanded
 
 # Auto-detect Concentrator output
 CLEANED_RULE=$(ls stage2_cleaned*.rule 2>/dev/null | head -n 1)
