@@ -229,15 +229,15 @@ python ranker.py \
 
 ### Default Values
 
-| Parameter | Default | Range |
-|-----------|---------|-------|
-| `DEPTH` | 3 | 3-4 |
-| `GEN_GENERATIONS` | 60 | 40-120 |
-| `GENETIC_POP` | 200 | 100-400 |
-| `TARGET_HOURS` | 2.0 | 0.5-5.0 |
-| `BLOOM_MB` | 800 | 400-2000 |
-| `TOKEN_STRIP_MAX_PREFIX` | 4 | 1-10 |
-| `TOKEN_STRIP_MAX_SUFFIX` | 4 | 1-10 |
+| Parameter | Default |
+|-----------|---------|
+| `DEPTH` | 6 |
+| `GEN_GENERATIONS` | 300 |
+| `GENETIC_POP` | 600 |
+| `TARGET_HOURS` | 2.0 |
+| `BLOOM_MB` | 800 |
+| `TOKEN_STRIP_MAX_PREFIX` | 6 |
+| `TOKEN_STRIP_MAX_SUFFIX` | 6 |
 
 ---
 
