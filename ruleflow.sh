@@ -39,6 +39,11 @@ case $MODE_CHOICE in
     *) MODE="balanced" ;;
 esac
 
+# ====================== LEGACY MODE CHOICE (ASK EARLY) ======================
+echo -e "\n\033[1;33m=== Step 3: Ranking Mode ===\033[0m"
+read -p "Use legacy (exhaustive) ranker mode? (y/n) [n]: " LEGACY_CHOICE
+LEGACY_CHOICE=${LEGACY_CHOICE,,}
+
 # ====================== DEFAULT PARAMETERS ======================
 DEPTH=3
 GEN_GENERATIONS=300
@@ -51,7 +56,12 @@ STAGE0_PROCESSES=0
 TOKEN_STRIP_MAX_PREFIX=4
 TOKEN_STRIP_MAX_SUFFIX=4
 
-# Ranker parameters (no Aether)
+# Ranker parameters (MAB only, used only if legacy is NOT chosen)
+RANKER_K=18000          # will be overridden by mode presets
+RANKER_MAB_SCREENING=4
+RANKER_MAB_FINAL=8
+RANKER_PRESET="medium_memory"
+
 if [ "$MODE" = "maximum" ]; then
     RANKER_K=25000
     RANKER_MAB_SCREENING=5
@@ -62,7 +72,7 @@ elif [ "$MODE" = "balanced" ]; then
     RANKER_MAB_SCREENING=4
     RANKER_MAB_FINAL=8
     RANKER_PRESET="medium_memory"
-else
+elif [ "$MODE" = "fast" ]; then
     RANKER_K=12000
     RANKER_MAB_SCREENING=3
     RANKER_MAB_FINAL=5
@@ -87,8 +97,11 @@ if [ "$MODE" = "custom" ] || [ "$MODE" = "maximum" ]; then
 
     echo -e "\n\033[1;33m--- Ranker Settings ---\033[0m"
     read -p "Final top rules to keep ($RANKER_K): " tmp; [ -n "$tmp" ] && RANKER_K=$tmp
-    read -p "MAB Screening Trials ($RANKER_MAB_SCREENING): " tmp; [ -n "$tmp" ] && RANKER_MAB_SCREENING=$tmp
-    read -p "MAB Final Trials ($RANKER_MAB_FINAL): " tmp; [ -n "$tmp" ] && RANKER_MAB_FINAL=$tmp
+    # Only ask for MAB parameters if we are NOT in legacy mode
+    if [[ "$LEGACY_CHOICE" != "y" ]]; then
+        read -p "MAB Screening Trials ($RANKER_MAB_SCREENING): " tmp; [ -n "$tmp" ] && RANKER_MAB_SCREENING=$tmp
+        read -p "MAB Final Trials ($RANKER_MAB_FINAL): " tmp; [ -n "$tmp" ] && RANKER_MAB_FINAL=$tmp
+    fi
     read -p "Ranker Preset [$RANKER_PRESET]: " tmp; [ -n "$tmp" ] && RANKER_PRESET=$tmp
 fi
 
@@ -124,17 +137,21 @@ if [ -z "$CLEANED_RULE" ]; then
 fi
 echo -e "\033[1;32m→ Using: $CLEANED_RULE\033[0m"
 
-# 3. Ranker (always runs because cracked list is required)
+# 3. Ranker (build command based on legacy choice)
 echo -e "\n\033[1;34m[3/3] Ranker...\033[0m"
-python ranker.py \
-    -w "$BASE_WORDLIST" \
-    -r "$CLEANED_RULE" \
-    -c "$CRACKED_LIST" \
-    -o stage3_ranking.csv \
-    -k $RANKER_K \
-    --mab-screening-trials $RANKER_MAB_SCREENING \
-    --mab-final-trials $RANKER_MAB_FINAL \
-    --preset $RANKER_PRESET
+
+# Base command (common part)
+RANKER_CMD="python ranker.py -w \"$BASE_WORDLIST\" -r \"$CLEANED_RULE\" -c \"$CRACKED_LIST\" -o stage3_ranking.csv -k $RANKER_K --preset $RANKER_PRESET"
+
+if [[ "$LEGACY_CHOICE" == "y" ]]; then
+    echo -e "\033[1;33m→ Running in LEGACY (exhaustive) mode.\033[0m"
+    RANKER_CMD="$RANKER_CMD --legacy"
+else
+    echo -e "\033[1;33m→ Running in MAB mode (screening=$RANKER_MAB_SCREENING, final=$RANKER_MAB_FINAL).\033[0m"
+    RANKER_CMD="$RANKER_CMD --mab-screening-trials $RANKER_MAB_SCREENING --mab-final-trials $RANKER_MAB_FINAL"
+fi
+
+eval $RANKER_CMD
 
 echo -e "\n\033[1;32mPipeline completed successfully!\033[0m"
 echo -e "\033[1;32mRanking results: stage3_ranking.csv\033[0m"
