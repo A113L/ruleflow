@@ -158,7 +158,7 @@ python rulest_v2.py "$BASE_WORDLIST" "$TARGET_WORDLIST" \
 
 # 2. Concentrator
 echo -e "\n\033[1;34m[2/3] Running Concentrator...\033[0m"
-python concentrator.py -p stage1_raw.rule --output_base_name stage2_cleaned --output-format expanded
+python concentrator.py -p stage1_raw.rule --output_base_name stage2_cleaned --output-format line
 
 CLEANED_RULE=$(ls stage2_cleaned*.rule 2>/dev/null | head -n 1)
 [ -z "$CLEANED_RULE" ] && { echo -e "\033[1;31mError: Concentrator output not found!\033[0m"; exit 1; }
