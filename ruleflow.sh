@@ -76,6 +76,7 @@ BLOOM_MB=800
 STAGE0_PROCESSES=0
 TOKEN_STRIP_MAX_PREFIX=6
 TOKEN_STRIP_MAX_SUFFIX=6
+TOKEN_STRIP_CHUNK_SIZE=0
 
 # Target Hours per mode
 case $MODE in
@@ -109,7 +110,7 @@ case $MODE in
         RANKER_PRESET="medium_memory" ;;
 esac
 
-# ====================== ADVANCED CONFIGURATION (Now for all modes) ======================
+# ====================== ADVANCED CONFIGURATION ======================
 echo -e "\n\033[1;33m=== Advanced Configuration ===\033[0m"
 read -p "Customize parameters (depth, strip, etc.)? (y/n) [y]: " CUSTOMIZE
 CUSTOMIZE=${CUSTOMIZE:-y}
@@ -124,6 +125,7 @@ if [[ "$CUSTOMIZE" =~ ^[Yy]$ ]]; then
     echo -e "\n\033[1;36m--- Token Strip Settings ---\033[0m"
     read -p "Max Prefix Length ($TOKEN_STRIP_MAX_PREFIX): " tmp; [ -n "$tmp" ] && TOKEN_STRIP_MAX_PREFIX=$tmp
     read -p "Max Suffix Length ($TOKEN_STRIP_MAX_SUFFIX): " tmp; [ -n "$tmp" ] && TOKEN_STRIP_MAX_SUFFIX=$tmp
+    read -p "Chunk Size (0=auto) ($TOKEN_STRIP_CHUNK_SIZE): " tmp; [ -n "$tmp" ] && TOKEN_STRIP_CHUNK_SIZE=$tmp
 
     echo -e "\n\033[1;36m--- Other Settings ---\033[0m"
     read -p "Bloom Filter (MB) ($BLOOM_MB): " tmp; [ -n "$tmp" ] && BLOOM_MB=$tmp
@@ -139,7 +141,7 @@ if [[ "$CUSTOMIZE" =~ ^[Yy]$ ]]; then
 fi
 
 # ====================== EXECUTION ======================
-echo -e "\n\033[1;32mStarting $MODE mode → Target: ${TARGET_HOURS}h | Depth: $DEPTH | Prefix/Suffix: $TOKEN_STRIP_MAX_PREFIX/$TOKEN_STRIP_MAX_SUFFIX\033[0m"
+echo -e "\n\033[1;32mStarting $MODE mode → Target: ${TARGET_HOURS}h | Depth: $DEPTH | Prefix/Suffix: $TOKEN_STRIP_MAX_PREFIX/$TOKEN_STRIP_MAX_SUFFIX | Chunk: ${TOKEN_STRIP_CHUNK_SIZE:-auto}\033[0m"
 
 # 1. Rulest
 echo -e "\n\033[1;34m[1/3] Running Rulest...\033[0m"
@@ -154,6 +156,7 @@ python rulest_v2.py "$BASE_WORDLIST" "$TARGET_WORDLIST" \
     --bloom-mb $BLOOM_MB \
     --token-strip-max-prefix $TOKEN_STRIP_MAX_PREFIX \
     --token-strip-max-suffix $TOKEN_STRIP_MAX_SUFFIX \
+    --token-strip-chunk-size $TOKEN_STRIP_CHUNK_SIZE \
     --token-strip-workers $STAGE0_PROCESSES
 
 # 2. Concentrator
