@@ -36,6 +36,82 @@ else
     echo -e "\033[1;32mAll scripts present.\033[0m"
 fi
 
+# ====================== PYTHON PACKAGE CHECK ======================
+echo -e "\n\033[1;33m=== Checking Python Dependencies ===\033[0m"
+
+PYTHON_CMD=""
+for cmd in python3 python; do
+    if command -v "$cmd" &>/dev/null; then
+        PYTHON_CMD="$cmd"
+        break
+    fi
+done
+
+if [ -z "$PYTHON_CMD" ]; then
+    echo -e "\033[1;31mError: No Python interpreter found. Please install Python 3.\033[0m"
+    exit 1
+fi
+
+echo -e "\033[1;34mUsing: $($PYTHON_CMD --version 2>&1)\033[0m"
+
+REQUIRED_PACKAGES=("numpy" "pyopencl" "tqdm" "psutil")
+MISSING_PACKAGES=()
+
+for pkg in "${REQUIRED_PACKAGES[@]}"; do
+    if ! $PYTHON_CMD -c "import $pkg" &>/dev/null; then
+        MISSING_PACKAGES+=("$pkg")
+        echo -e "\033[1;31m✗ $pkg — not found\033[0m"
+    else
+        echo -e "\033[1;32m✓ $pkg — OK\033[0m"
+    fi
+done
+
+if [ ${#MISSING_PACKAGES[@]} -gt 0 ]; then
+    echo -e "\n\033[1;33mMissing packages: ${MISSING_PACKAGES[*]}\033[0m"
+    read -p "Install missing packages now? (y/n): " CONFIRM_PIP
+    if [[ "$CONFIRM_PIP" =~ ^[Yy]$ ]]; then
+        # Detect pip
+        PIP_CMD=""
+        for cmd in pip3 pip "$PYTHON_CMD -m pip"; do
+            if $cmd --version &>/dev/null 2>&1; then
+                PIP_CMD="$cmd"
+                break
+            fi
+        done
+
+        if [ -z "$PIP_CMD" ]; then
+            echo -e "\033[1;31mError: pip not found. Install pip and retry.\033[0m"
+            exit 1
+        fi
+
+        for pkg in "${MISSING_PACKAGES[@]}"; do
+            echo -e "\033[1;34mInstalling $pkg...\033[0m"
+            if $PIP_CMD install "$pkg" --quiet --progress-bar on; then
+                echo -e "\033[1;32m✓ $pkg installed successfully\033[0m"
+            else
+                echo -e "\033[1;31mFailed to install $pkg. Try manually: $PIP_CMD install $pkg\033[0m"
+                exit 1
+            fi
+        done
+
+        # Verify installs
+        echo -e "\n\033[1;34mVerifying installations...\033[0m"
+        for pkg in "${MISSING_PACKAGES[@]}"; do
+            if $PYTHON_CMD -c "import $pkg" &>/dev/null; then
+                echo -e "\033[1;32m✓ $pkg — verified\033[0m"
+            else
+                echo -e "\033[1;31m✗ $pkg — verification failed! Aborting.\033[0m"
+                exit 1
+            fi
+        done
+    else
+        echo -e "\033[1;31mCannot continue without required packages.\033[0m"
+        exit 1
+    fi
+else
+    echo -e "\033[1;32mAll Python packages present.\033[0m"
+fi
+
 # ====================== INPUT FILES ======================
 echo -e "\n\033[1;33m=== Step 1: Input Files ===\033[0m"
 read -p "Base wordlist path: " BASE_WORDLIST
@@ -145,7 +221,7 @@ echo -e "\n\033[1;32mStarting $MODE mode → Target: ${TARGET_HOURS}h | Depth: $
 
 # 1. Rulest
 echo -e "\n\033[1;34m[1/3] Running Rulest...\033[0m"
-python rulest_v2.py "$BASE_WORDLIST" "$TARGET_WORDLIST" \
+$PYTHON_CMD rulest_v2.py "$BASE_WORDLIST" "$TARGET_WORDLIST" \
     -o stage1_raw.rule \
     --max-depth $DEPTH \
     --token-strip \
@@ -161,14 +237,14 @@ python rulest_v2.py "$BASE_WORDLIST" "$TARGET_WORDLIST" \
 
 # 2. Concentrator
 echo -e "\n\033[1;34m[2/3] Running Concentrator...\033[0m"
-python concentrator.py -p stage1_raw.rule --output_base_name stage2_cleaned --output-format line
+$PYTHON_CMD concentrator.py -p stage1_raw.rule --output_base_name stage2_cleaned --output-format line
 
 CLEANED_RULE=$(ls stage2_cleaned*.rule 2>/dev/null | head -n 1)
 [ -z "$CLEANED_RULE" ] && { echo -e "\033[1;31mError: Concentrator output not found!\033[0m"; exit 1; }
 
 # 3. Ranker
 echo -e "\n\033[1;34m[3/3] Running Ranker...\033[0m"
-RANKER_CMD="python ranker.py -w \"$BASE_WORDLIST\" -r \"$CLEANED_RULE\" -c \"$CRACKED_LIST\" -o stage3_ranking.csv -k $RANKER_K --preset $RANKER_PRESET"
+RANKER_CMD="$PYTHON_CMD ranker.py -w \"$BASE_WORDLIST\" -r \"$CLEANED_RULE\" -c \"$CRACKED_LIST\" -o stage3_ranking.csv -k $RANKER_K --preset $RANKER_PRESET"
 
 if [[ "$LEGACY_CHOICE" == "y" ]]; then
     RANKER_CMD="$RANKER_CMD --legacy"
