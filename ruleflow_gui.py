@@ -849,11 +849,10 @@ class App(tk.Tk):
                 f"\nConcentrator exited with code {rc}\n", "danger"))
             self.after(0, lambda: self._finish(error=True)); return
 
-        matches = glob.glob(s2b + "*.rule")
+        expected = s2b + "_processed.rule"
+        matches = [expected] if os.path.isfile(expected) else glob.glob(s2b + "*.rule")
         if not matches:
-            # EOFError auto-save path (stdin closed) writes a timestamped
-            # filename instead of output_base_name -- fall back to the most
-            # recently modified .rule file in the output directory.
+            # Fallback: most recently modified .rule file in the output directory.
             fallback = sorted(
                 glob.glob(os.path.join(outdir, "*.rule")),
                 key=os.path.getmtime, reverse=True
