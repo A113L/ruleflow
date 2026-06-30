@@ -229,6 +229,7 @@ class App(tk.Tk):
         self._build_files()
         self._build_mode()
         self._build_device()
+        self._build_concentrator()
         self._build_ranker()
         self._build_advanced()
         self._build_log()
@@ -328,8 +329,33 @@ class App(tk.Tk):
                                     bg=SURFACE, fg=FG2, font=("TkDefaultFont", 8), anchor="w")
         self._dev_status.pack(fill="x", pady=(4, 0))
 
+    def _build_concentrator(self):
+        sec = SectionFrame(self._inner, "Step 3 — Concentrator Output")
+        sec.pack(fill="x", pady=(0, 8))
+        self._concfmt_var = tk.BooleanVar(value=True)  # True = expanded, False = line
+
+        row = tk.Frame(sec, bg=SURFACE); row.pack(fill="x")
+        tk.Label(row, text="Output format", bg=SURFACE, fg=FG2,
+                 font=("TkDefaultFont", 9), width=22, anchor="w").pack(side="left")
+
+        def _tog():
+            self._concfmt_info.config(
+                text="Expanded — operators with arguments separated by spaces."
+                if self._concfmt_var.get()
+                else "Line — full rule on a single line, compact (hashcat-ready).")
+
+        tk.Checkbutton(row, text="Expanded format",
+                       variable=self._concfmt_var,
+                       bg=SURFACE, fg=FG, selectcolor=CARD,
+                       activebackground=SURFACE, activeforeground=FG,
+                       command=_tog).pack(side="left")
+        self._concfmt_info = tk.Label(sec,
+            text="Expanded — operators with arguments separated by spaces.",
+            bg=SURFACE, fg=FG2, font=("TkDefaultFont", 8), anchor="w")
+        self._concfmt_info.pack(fill="x", pady=(4, 0))
+
     def _build_ranker(self):
-        sec = SectionFrame(self._inner, "Step 3 — Ranker Strategy")
+        sec = SectionFrame(self._inner, "Step 4 — Ranker Strategy")
         sec.pack(fill="x", pady=(0, 8))
         self._legacy_var = tk.BooleanVar(value=False)
 
@@ -838,11 +864,12 @@ class App(tk.Tk):
         self.after(0, lambda: self._status_lbl.config(
             text="Running concentrator…", fg=ACCENT))
         self._stage = 2
+        conc_format = "expanded" if self._concfmt_var.get() else "line"
         rc = self._run_step([
             py, conc_py,
             "-p", s1,
             "--output_base_name", s2b,
-            "--output-format", "expanded",
+            "--output-format", conc_format,
         ], "[2/3] Concentrator")
         if rc != 0:
             self.after(0, lambda: self._log_write(
