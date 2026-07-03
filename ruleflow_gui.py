@@ -420,7 +420,7 @@ class App(tk.Tk):
 
         div()
         sub("Bloom & token-strip")
-        self._adv_bm = NumRow(b, "Bloom filter",  100, 4000, 100, 800,  unit="MB"); self._adv_bm.pack(fill="x", pady=2)
+        self._adv_bm = NumRow(b, "Bloom filter",  100, 4000, 100, 256,  unit="MB"); self._adv_bm.pack(fill="x", pady=2)
         self._adv_s0 = NumRow(b, "Stage-0 workers (0=auto)", 0, 64, 1, 0);         self._adv_s0.pack(fill="x", pady=2)
         self._adv_tp = NumRow(b, "Token-strip max prefix",   1,  12, 1, 4);         self._adv_tp.pack(fill="x", pady=2)
         self._adv_ts = NumRow(b, "Token-strip max suffix",   1,  12, 1, 4);         self._adv_ts.pack(fill="x", pady=2)
@@ -475,10 +475,13 @@ class App(tk.Tk):
 
     def _set_mode(self, mode):
         self._mode_var.set(mode)
+        # Bloom filter size set to 256MB across all presets as requested
+        # Token-strip settings (tp/ts) updated to match screenshots
+        # Memory preset (pr) set to "medium_memory" for all modes
         presets = {
-            "maximum":  dict(depth=3, gg=300, gp=600, th=2.0, bm=800, rk=25000, ms=5, mf=10, pr="high_memory"),
-            "balanced": dict(depth=3, gg=300, gp=600, th=2.0, bm=800, rk=18000, ms=4, mf=8,  pr="medium_memory"),
-            "fast":     dict(depth=3, gg=300, gp=600, th=2.0, bm=800, rk=12000, ms=3, mf=5,  pr="low_memory"),
+            "maximum":  dict(depth=10, gg=300, gp=600, th=2.0, bm=256, tp=10, ts=10, rk=100000, ms=5, mf=10, pr="medium_memory"),
+            "balanced": dict(depth=6,  gg=300, gp=600, th=1.0, bm=256, tp=6,  ts=6,  rk=18000,  ms=4, mf=8,  pr="medium_memory"),
+            "fast":     dict(depth=3,  gg=300, gp=600, th=0.5, bm=256, tp=3,  ts=3,  rk=50000,  ms=3, mf=5,  pr="medium_memory"),
         }
         for v, btn in self._mode_btns.items():
             sel = v == mode
@@ -493,7 +496,8 @@ class App(tk.Tk):
             self._adv_depth.set(p["depth"]); self._adv_gg.set(p["gg"])
             self._adv_gp.set(p["gp"]);      self._adv_th.set(p["th"])
             self._adv_bm.set(p["bm"]);      self._adv_rk.set(p["rk"])
-            self._adv_ms.set(p["ms"]);       self._adv_mf.set(p["mf"])
+            self._adv_ms.set(p["ms"]);      self._adv_mf.set(p["mf"])
+            self._adv_tp.set(p["tp"]);      self._adv_ts.set(p["ts"])
             for pill in self._preset_pills:
                 is_p = pill["data"] == p["pr"]
                 pill["btn"].config(bg=ACCENT if is_p else CARD,
