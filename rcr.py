@@ -772,7 +772,7 @@ class RCRApp(tk.Tk):
 
         exp3 = Expander(wrap, "Ranker MAB Tuning", "Only used when MAB strategy is selected")
         exp3.pack(fill="x", pady=(0, 8))
-        self._adv_rk = ModernSlider(exp3.body, "Top rules to keep (K)", 1000, 100000, 1000, 18000); self._adv_rk.pack(fill="x", pady=2)
+        self._adv_rk = ModernSlider(exp3.body, "Top rules to keep (K)", 1000, 100000, 1000, 75000); self._adv_rk.pack(fill="x", pady=2)
         self._adv_ms = ModernSlider(exp3.body, "MAB screening trials", 1, 30, 1, 4); self._adv_ms.pack(fill="x", pady=2)
         self._adv_mf = ModernSlider(exp3.body, "MAB final trials", 1, 50, 1, 8); self._adv_mf.pack(fill="x", pady=2)
 
@@ -960,7 +960,7 @@ class RCRApp(tk.Tk):
             card.set_selected(value == mode)
         presets = {
             "maximum": dict(depth=10, gg=300, gp=600, th=2.0, bm=256, tp=10, ts=10, rk=100000, ms=5, mf=10, pr="medium_memory"),
-            "balanced": dict(depth=6, gg=300, gp=600, th=1.0, bm=256, tp=6, ts=6, rk=18000, ms=4, mf=8, pr="medium_memory"),
+            "balanced": dict(depth=6, gg=300, gp=600, th=1.0, bm=256, tp=6, ts=6, rk=75000, ms=4, mf=8, pr="medium_memory"),
             "fast": dict(depth=3, gg=300, gp=600, th=0.5, bm=256, tp=3, ts=3, rk=50000, ms=3, mf=5, pr="medium_memory"),
         }
         if mode in presets and hasattr(self, "_adv_depth"):
