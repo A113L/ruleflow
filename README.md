@@ -247,7 +247,7 @@ python ranker.py \
     -r "$CLEANED_RULE" \
     -c "$CRACKED_LIST" \
     -o stage3_ranking.csv \
-    -k 18000 \
+    -k 75000 \
     --legacy \
     --preset medium_memory
 
@@ -257,7 +257,7 @@ python ranker.py \
     -r "$CLEANED_RULE" \
     -c "$CRACKED_LIST" \
     -o stage3_ranking.csv \
-    -k 18000 \
+    -k 75000 \
     --mab-screening-trials 4 \
     --mab-final-trials 8 \
     --preset medium_memory
@@ -286,7 +286,7 @@ python ranker.py \
 
 | Parameter | Maximum | Balanced | Fast |
 |-----------|---------|----------|------|
-| `RANKER_K` | 100000 | 18000 | 50000 |
+| `RANKER_K` | 100000 | 75000 | 50000 |
 | `MAB_SCREENING` | 5 | 4 | 3 |
 | `MAB_FINAL` | 10 | 8 | 5 |
 | `PRESET` | `medium_memory` | `medium_memory` | `medium_memory` |
