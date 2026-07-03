@@ -1,8 +1,8 @@
 
 # 🔐 Interactive Hashcat Rule Pipeline
 
-&gt; An automated, interactive pipeline for generating, cleaning, and ranking Hashcat rules using genetic algorithms, bloom filters, and multi-armed bandit optimization.  
-&gt; Now includes **RCR** — a modern dark-themed GUI front-end for the full chain.
+> An automated, interactive pipeline for generating, cleaning, and ranking Hashcat rules using genetic algorithms, bloom filters, and multi-armed bandit optimization.  
+> Now includes **RCR** — a modern dark-themed GUI front-end for the full chain.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Bash](https://img.shields.io/badge/Bash-4.0%2B-green.svg)](https://www.gnu.org/software/bash/)
