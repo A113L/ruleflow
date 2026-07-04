@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from typing import Optional, List, Tuple, Callable
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-APP_TITLE = "RCR v0.3 - RuleFlow Chain Runner"
+APP_TITLE = "RCR - RuleFlow Chain Runner"
 
 # ── Theme ────────────────────────────────────────────────────────────────────
 
@@ -173,6 +173,10 @@ class ManagedProcess:
         self._proc: Optional[subprocess.Popen] = None
         self._terminated = False
         self._lock = threading.Lock()
+        # FIX 1: Use a background reader thread + queue instead of select.select
+        # so the app works on Windows (select doesn't support pipe FDs there).
+        self._queue: queue.Queue = queue.Queue()
+        self._reader_thread: Optional[threading.Thread] = None
 
     @property
     def pid(self) -> Optional[int]:
@@ -193,35 +197,30 @@ class ManagedProcess:
                     env=env,
                 )
                 self._terminated = False
+                self._queue = queue.Queue()
+                self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
+                self._reader_thread.start()
                 return True
             except Exception as e:
                 print(f"Failed to start process: {e}", file=sys.stderr)
                 return False
 
-    def iter_events(self, timeout: float = 0.3, chunk_size: int = 4096):
-        """Yield ('line', text) for every chunk separated by either \r or \n."""
+    def _reader_loop(self, chunk_size: int = 4096):
+        """Background thread: reads stdout and pushes delimited lines into the queue."""
         if self._proc is None or self._proc.stdout is None:
+            self._queue.put(None)
             return
-        fd = self._proc.stdout.fileno()
         buf = ""
         decoder_leftover = b""
-
         while True:
             if self._terminated:
                 break
-            ready, _, _ = select.select([fd], [], [], timeout)
-            if not ready:
-                if self._proc.poll() is not None:
-                    break
-                continue
             try:
-                raw = os.read(fd, chunk_size)
-            except OSError:
+                raw = self._proc.stdout.read(chunk_size)
+            except (OSError, ValueError):
                 break
             if not raw:
-                if self._proc.poll() is not None:
-                    break
-                continue
+                break
 
             raw = decoder_leftover + raw
             try:
@@ -233,26 +232,50 @@ class ManagedProcess:
 
             buf += text
             while True:
-                # Find the earliest line break: \r or \n
                 idx_n = buf.find("\n")
                 idx_r = buf.find("\r")
-                idx = -1
+                if idx_n == -1 and idx_r == -1:
+                    break
                 if idx_n != -1 and idx_r != -1:
                     idx = min(idx_n, idx_r)
                 elif idx_n != -1:
                     idx = idx_n
-                elif idx_r != -1:
+                else:
                     idx = idx_r
-                if idx == -1:
-                    break
                 piece = buf[:idx]
-                # Remove the delimiter (one char)
-                buf = buf[idx+1:]
-                if piece:
-                    yield ("line", piece)   # Always treat as a normal line
+                buf = buf[idx + 1 :]
+                # FIX 8: Treat \r\n as a single line break (skip the trailing \n after \r)
+                if idx == idx_r and buf.startswith("\n"):
+                    buf = buf[1:]
+                self._queue.put(("line", piece))
 
         if buf:
-            yield ("line", buf)
+            self._queue.put(("line", buf))
+        self._queue.put(None)
+
+    def iter_events(self, timeout: float = 0.3, chunk_size: int = 4096):
+        """Yield ('line', text) from the reader thread queue."""
+        # chunk_size is kept for API compatibility but ignored here.
+        while True:
+            if self._terminated:
+                break
+            try:
+                item = self._queue.get(timeout=timeout)
+            except queue.Empty:
+                if self._proc is not None and self._proc.poll() is not None:
+                    # Process ended; drain remaining items
+                    while True:
+                        try:
+                            item = self._queue.get_nowait()
+                        except queue.Empty:
+                            return
+                        if item is None:
+                            return
+                        yield item
+                continue
+            if item is None:
+                break
+            yield item
 
     def terminate(self, wait: float = 3.0) -> None:
         with self._lock:
@@ -450,6 +473,10 @@ class ModernSlider(tk.Frame):
     def _on_entry(self, _=None):
         try:
             v = float(self.entry_var.get())
+            # FIX 6: Clamp typed values to the scale's [from_, to] range
+            sc_from = float(self.scale.cget("from"))
+            sc_to = float(self.scale.cget("to"))
+            v = max(sc_from, min(v, sc_to))
             self.var.set(v)
             self.entry_var.set(self._fmt(v))
         except ValueError:
@@ -462,9 +489,12 @@ class ModernSlider(tk.Frame):
             return float(self.var.get())
 
     def set(self, v: float):
-        self.var.set(v)
+        # FIX 6: Clamp when programmatically setting as well
+        sc_from = float(self.scale.cget("from"))
         sc_to = float(self.scale.cget("to"))
-        self.scale.set(min(v, sc_to))
+        v = max(sc_from, min(v, sc_to))
+        self.var.set(v)
+        self.scale.set(v)
         self.entry_var.set(self._fmt(v))
 
 
@@ -528,6 +558,9 @@ class RCRApp(tk.Tk):
         self._dev_var = tk.StringVar(value="auto")
 
         self._build_ui()
+        # FIX 3: Apply the "balanced" preset to sliders so the UI state matches
+        # the visually-selected default mode on startup.
+        self._set_mode("balanced")
         self._start_polling()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -614,9 +647,17 @@ class RCRApp(tk.Tk):
         win = canvas.create_window((0, 0), window=wrap, anchor="nw")
         wrap.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(win, width=e.width))
+
+        # FIX 2 + 7: Bind mousewheel locally (not globally) and add Linux support
         def _on_mousewheel(e):
             canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+            return "break"
+
+        for widget in (canvas, wrap):
+            widget.bind("<MouseWheel>", _on_mousewheel)
+            widget.bind("<Button-4>", lambda e: canvas.yview_scroll(-1, "units"))
+            widget.bind("<Button-5>", lambda e: canvas.yview_scroll(1, "units"))
+
         return wrap
 
     # -- Tab: Pipeline -----------------------------------------------
@@ -754,7 +795,16 @@ class RCRApp(tk.Tk):
         win = canvas.create_window((0, 0), window=wrap, anchor="nw")
         wrap.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(win, width=e.width))
-        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
+
+        # FIX 2 + 7: Local mousewheel binds + Linux support
+        def _on_mousewheel(e):
+            canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+            return "break"
+
+        for widget in (canvas, wrap):
+            widget.bind("<MouseWheel>", _on_mousewheel)
+            widget.bind("<Button-4>", lambda e: canvas.yview_scroll(-1, "units"))
+            widget.bind("<Button-5>", lambda e: canvas.yview_scroll(1, "units"))
 
         exp1 = Expander(wrap, "Rulest Core", "Depth, genetic algorithm, time budget", start_open=True)
         exp1.pack(fill="x", pady=(0, 8))
@@ -1265,8 +1315,8 @@ class RCRApp(tk.Tk):
             if not text:
                 continue
 
-            # Always treat as a normal line, but strip trailing \r if any
-            clean_text = text.rstrip('\r') + '\n'
+            # FIX 4: Remove the extra '\n' here — _log_line already adds one.
+            clean_text = text.rstrip('\r')
             self._log_line(clean_text)
 
         rc = proc.returncode if proc is not None else -1
@@ -1274,7 +1324,8 @@ class RCRApp(tk.Tk):
         self._mem_monitor.set_child_pid(None)
         gc.collect()
 
-        if rc not in (0, None) and self._check_for_oom():
+        # FIX 5: Don't suggest low-memory if the user manually cancelled the run.
+        if rc not in (0, None) and not self._cancel_event.is_set() and self._check_for_oom():
             self._log_error(
                 "This looks like an out-of-memory failure (allocation error / process killed).")
             self._log_system("Suggestion: switch the Memory Preset to Low and reduce K / genetic "
