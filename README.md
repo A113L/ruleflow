@@ -110,7 +110,7 @@ wget https://raw.githubusercontent.com/A113L/concentrator/refs/heads/main/concen
 wget https://github.com/A113L/ranker/raw/refs/heads/main/ranker.py
 
 # Download the GUI front-end (optional)
-wget https://github.com/A113L/ruleflow/raw/refs/heads/main/rcr.py
+wget https://github.com/A113L/ruleflow/raw/refs/heads/main/rcr
 
 # Ensure Python scripts are executable
 chmod +x rulest_v2.py concentrator.py ranker.py rcr.py
@@ -120,7 +120,7 @@ chmod +x ruleflow.sh
 ./ruleflow.sh
 
 # Or launch the GUI
-python rcr.py
+python rcr
 ```
 
 ---
@@ -146,7 +146,7 @@ You will be prompted for:
 Launch the graphical runner:
 
 ```bash
-python rcr.py
+python rcr
 ```
 
 **Workflow:**
@@ -291,8 +291,8 @@ python ranker.py \
 | `MAB_FINAL` | 10 | 8 | 5 |
 | `PRESET` | `medium_memory` | `medium_memory` | `medium_memory` |
 | `DEPTH` | 10 | 6 | 3 |
-| `GEN_GENERATIONS` | 300 | 300 | 300 |
-| `GENETIC_POP` | 600 | 600 | 600 |
+| `GEN_GENERATIONS` | 500 | 300 | 150 |
+| `GENETIC_POP` | 1000 | 600 | 300 |
 
 ### Default Values
 
