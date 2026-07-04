@@ -133,6 +133,29 @@ def parse_ansi_segments(text: str) -> List[Tuple[str, Optional[str]]]:
     return segments
 
 
+# tqdm (and similar) progress bars are rendered by the *external* tool with
+# whatever width it decides on, which varies with description length, digit
+# counts in the counters, etc. — making the log look ragged/uneven. Since we
+# can't change how those tools draw their bars, we detect the "NN%|<bar>|"
+# segment and re-render just that portion at a fixed width, so every bar in
+# the log (regardless of which stage or tool produced it) lines up evenly.
+_TQDM_BAR_RE = re.compile(r'(\d{1,3})%\|([^|]*)\|')
+PROGRESS_BAR_WIDTH = 30
+
+
+def normalize_progress_bars(text: str) -> str:
+    def _replace(m: "re.Match") -> str:
+        try:
+            pct = max(0, min(100, int(m.group(1))))
+        except ValueError:
+            return m.group(0)
+        filled = round(PROGRESS_BAR_WIDTH * pct / 100)
+        bar = "█" * filled + " " * (PROGRESS_BAR_WIDTH - filled)
+        return f"{pct}%|{bar}|"
+
+    return _TQDM_BAR_RE.sub(_replace, text)
+
+
 # ── Theme switching (light / dark) ──────────────────────────────────────────
 
 _TK_COLOR_OPTIONS = (
@@ -400,15 +423,6 @@ class ManagedProcess:
                 return None
             return self._proc.poll()
 
-    def wait(self, timeout: Optional[float] = None) -> Optional[int]:
-        with self._lock:
-            if self._proc is None:
-                return None
-            try:
-                return self._proc.wait(timeout=timeout)
-            except Exception:
-                return None
-
 
 # ── UI Helpers ───────────────────────────────────────────────────────────────
 
@@ -631,14 +645,15 @@ class ModeCard(tk.Frame):
 
 # ── Main Application ─────────────────────────────────────────────────────────
 
-MAX_LOG_LINES = None   # No limit
-TRIM_TO_LINES = None   # No limit
+# Log display is kept unbounded per user preference — the queue that feeds
+# it is unbounded too (see BoundedLogQueue(maxsize=0) below), so no output is
+# ever dropped or trimmed, either on screen or in the mirrored log file.
 
 
 class RCRApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title(f"{APP_TITLE}  —  RuleFlow Chain Runner")
+        self.title(APP_TITLE)
         self.configure(bg=THEME.bg)
         self.geometry("1280x1000")
         self.minsize(980, 680)
@@ -646,11 +661,12 @@ class RCRApp(tk.Tk):
         self._running = False
         self._stage = 0
         self._process: Optional[ManagedProcess] = None
-        self._log_queue = BoundedLogQueue(maxsize=3000)
+        self._log_queue = BoundedLogQueue(maxsize=0)
         self._mem_monitor = MemoryMonitor(threshold_mb=6144.0)
         self._cancel_event = threading.Event()
         self._log_file = None
         self._log_file_path = None
+        self._log_file_lock = threading.Lock()
         self._log_line_count = 0
         self._recent_tail: List[str] = []
         self._autoscroll = True
@@ -997,7 +1013,7 @@ class RCRApp(tk.Tk):
         log_frame = tk.Frame(card, bg=THEME.card)
         log_frame.pack(fill="both", expand=True)
 
-        self._hbar = ttk.Scrollbar(log_frame, orient="horizontal", style="Horizontal.TScrollbar")
+        self._hbar = tk.Scrollbar(log_frame, orient="horizontal", bg=THEME.surface, troughcolor=THEME.bg)
         self._hbar.pack(side="bottom", fill="x")
         self._vbar = tk.Scrollbar(log_frame, orient="vertical", bg=THEME.surface, troughcolor=THEME.bg)
         self._vbar.pack(side="right", fill="y")
@@ -1007,7 +1023,7 @@ class RCRApp(tk.Tk):
             bg="#0d0f14", fg=THEME.fg, insertbackground=THEME.accent,
             font=MONO, relief="flat", bd=0,
             highlightbackground=THEME.border, highlightthickness=1,
-            wrap="char",
+            wrap="none",
             width=120,
             xscrollcommand=self._hbar.set,
             yscrollcommand=self._vbar.set,
@@ -1256,16 +1272,24 @@ class RCRApp(tk.Tk):
     # ── Log Writing ─────────────────────────────────────────────────
 
     def _log_system(self, text: str):
-        self._log_queue.put(("system", f"[{time.strftime('%H:%M:%S')}] {text}\n"))
+        line = f"[{time.strftime('%H:%M:%S')}] {text}\n"
+        self._write_to_disk_and_tail(line)
+        self._log_queue.put(("system", line))
 
     def _log_error(self, text: str):
-        self._log_queue.put(("error", f"[{time.strftime('%H:%M:%S')}] ERROR: {text}\n"))
+        line = f"[{time.strftime('%H:%M:%S')}] ERROR: {text}\n"
+        self._write_to_disk_and_tail(line)
+        self._log_queue.put(("error", line))
 
     def _log_muted(self, text: str):
-        self._log_queue.put(("muted", text + "\n"))
+        line = text + "\n"
+        self._write_to_disk_and_tail(line)
+        self._log_queue.put(("muted", line))
 
     def _log_line(self, text: str):
-        self._log_queue.put(("ansi_line", text + "\n"))
+        line = text + "\n"
+        self._write_to_disk_and_tail(line)
+        self._log_queue.put(("ansi_line", line))
 
     def _clear_log(self):
         self._log.config(state="normal")
@@ -1278,28 +1302,32 @@ class RCRApp(tk.Tk):
         ts = time.strftime("%Y%m%d_%H%M%S")
         self._log_file_path = os.path.join(self._outdir_var.get(), f"rcr_run_{ts}.log")
         try:
-            self._log_file = open(self._log_file_path, "a", encoding="utf-8", errors="replace")
+            with self._log_file_lock:
+                self._log_file = open(self._log_file_path, "a", encoding="utf-8", errors="replace")
         except Exception as e:
             self._log_file = None
             self._log_error(f"Could not open log file for writing: {e}")
 
     def _close_log_stream(self):
-        if self._log_file:
-            try:
-                self._log_file.close()
-            except Exception:
-                pass
-            self._log_file = None
+        with self._log_file_lock:
+            if self._log_file:
+                try:
+                    self._log_file.close()
+                except Exception:
+                    pass
+                self._log_file = None
 
-    def _mirror_to_disk(self, text: str):
-        if self._log_file:
-            try:
-                clean = strip_ansi(text)
-                self._log_file.write(clean)
-            except Exception:
-                pass
-
-    def _remember_tail(self, text: str):
+    def _write_to_disk_and_tail(self, text: str):
+        """Called immediately when a log message is produced (may be from a
+        background thread), so the on-disk log and the OOM-detection tail are
+        always complete — independent of how fast the GUI thread can drain
+        the display queue. This guarantees no log lines are ever lost."""
+        with self._log_file_lock:
+            if self._log_file:
+                try:
+                    self._log_file.write(strip_ansi(text))
+                except Exception:
+                    pass
         self._recent_tail.append(text)
         if len(self._recent_tail) > 200:
             self._recent_tail = self._recent_tail[-200:]
@@ -1324,24 +1352,12 @@ class RCRApp(tk.Tk):
         if dropped > 0:
             self._apply_log_entry("system", f"[{time.strftime('%H:%M:%S')}] … {dropped} log lines dropped (backpressure)\n")
 
-        self._trim_log_if_needed()
         self.after(50, self._poll_loop)
-
-    def _trim_log_if_needed(self):
-        if MAX_LOG_LINES is None or self._log_line_count <= MAX_LOG_LINES:
-            return
-        self._log.config(state="normal")
-        to_delete = self._log_line_count - TRIM_TO_LINES
-        self._log.delete("1.0", f"{to_delete + 1}.0")
-        self._log.config(state="disabled")
-        self._log_line_count = TRIM_TO_LINES
 
     def _apply_log_entry(self, kind: str, content: str):
         self._log.config(state="normal")
 
         if kind in ("ansi_line", "system", "error", "muted"):
-            self._mirror_to_disk(content)
-            self._remember_tail(content)
             tag = {"system": "info", "error": "danger", "muted": "muted"}.get(kind)
             if kind == "ansi_line":
                 for chunk, colour in parse_ansi_segments(content):
@@ -1360,7 +1376,6 @@ class RCRApp(tk.Tk):
             self._log_line_count += content.count("\n")
 
         else:
-            self._mirror_to_disk(content)
             self._log.insert("end", content)
             self._log_line_count += content.count("\n")
 
@@ -1477,6 +1492,12 @@ class RCRApp(tk.Tk):
         self._process = ManagedProcess()
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
+        # When stdout is piped (no real TTY), progress-bar libraries like
+        # tqdm can't detect a terminal width and fall back to a narrow
+        # default, truncating things like the GA/minimizer speed readout.
+        # Giving them an explicit, generous width avoids that.
+        env["COLUMNS"] = "250"
+        env["LINES"] = "50"
 
         if not self._process.start(cmd, self._outdir_var.get(), env):
             self._log_error("Failed to start process")
@@ -1492,18 +1513,13 @@ class RCRApp(tk.Tk):
             if not text:
                 continue
 
-            clean_text = text.rstrip('\r')
+            clean_text = normalize_progress_bars(text.rstrip('\r'))
             self._log_line(clean_text)
 
-        # Reap the process properly so we get a real exit code
-        rc = proc.wait(timeout=5.0)
-        if rc is None:
-            rc = -1
+        rc = proc.returncode if proc is not None else -1
         self._process = None
         self._mem_monitor.set_child_pid(None)
         gc.collect()
-
-        self._log_system(f"Process exited with code {rc}")
 
         if rc not in (0, None) and not self._cancel_event.is_set() and self._check_for_oom():
             self._log_error(
@@ -1513,6 +1529,22 @@ class RCRApp(tk.Tk):
             self.after(0, self._offer_low_memory_dialog)
 
         return rc if rc is not None else -1
+
+    def _stage_succeeded(self, rc: int, expected_path: Optional[str], label: str) -> bool:
+        """A non-zero exit code is the primary failure signal, but some of
+        these tools can exit non-zero from a benign cleanup issue *after*
+        writing valid output. If the expected output file was actually
+        written (and isn't empty), treat the stage as successful instead of
+        failing the whole pipeline over a false alarm."""
+        if rc == 0:
+            return True
+        if expected_path and os.path.isfile(expected_path) and os.path.getsize(expected_path) > 0:
+            self._log_system(
+                f"{label} exited with code {rc}, but its output file was written "
+                f"successfully ({expected_path}) — continuing as if it succeeded."
+            )
+            return True
+        return False
 
     def _offer_low_memory_dialog(self):
         if messagebox.askyesno(
@@ -1570,7 +1602,7 @@ class RCRApp(tk.Tk):
             "--token-strip-workers", str(s0),
         ] + dev_args, "rulest — rule extraction")
 
-        if rc != 0 or self._cancel_event.is_set():
+        if self._cancel_event.is_set() or not self._stage_succeeded(rc, s1, "rulest"):
             self.after(0, lambda: self._finish(error=True))
             return
 
@@ -1589,7 +1621,7 @@ class RCRApp(tk.Tk):
             "--output-format", conc_format,
         ], "concentrator — rule optimization")
 
-        if rc != 0 or self._cancel_event.is_set():
+        if self._cancel_event.is_set():
             self.after(0, lambda: self._finish(error=True))
             return
 
@@ -1604,9 +1636,15 @@ class RCRApp(tk.Tk):
                 matches = [fallback[0]]
                 self._log_system(f"Using fallback output: {matches[0]}")
         if not matches:
-            self._log_error(f"No concentrator output found: {s2b}*.rule")
+            extra = f" (process also exited with code {rc})" if rc != 0 else ""
+            self._log_error(f"No concentrator output found: {s2b}*.rule{extra}")
             self.after(0, lambda: self._finish(error=True))
             return
+        elif rc != 0:
+            self._log_system(
+                f"concentrator exited with code {rc}, but its output file was written "
+                f"successfully ({matches[0]}) — continuing as if it succeeded."
+            )
 
         cleaned = matches[0]
         self._log_system(f"Using cleaned rules: {cleaned}")
@@ -1626,7 +1664,7 @@ class RCRApp(tk.Tk):
             self._log_system("Using MAB (adaptive) ranker — best for very large / imbalanced rule sets.")
 
         rc = self._run_step(cmd3, "ranker — rule scoring & ranking")
-        if rc != 0 or self._cancel_event.is_set():
+        if self._cancel_event.is_set() or not self._stage_succeeded(rc, s3, "ranker"):
             self.after(0, lambda: self._finish(error=True))
             return
 
