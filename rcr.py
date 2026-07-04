@@ -173,8 +173,6 @@ class ManagedProcess:
         self._proc: Optional[subprocess.Popen] = None
         self._terminated = False
         self._lock = threading.Lock()
-        # FIX 1: Use a background reader thread + queue instead of select.select
-        # so the app works on Windows (select doesn't support pipe FDs there).
         self._queue: queue.Queue = queue.Queue()
         self._reader_thread: Optional[threading.Thread] = None
 
@@ -206,7 +204,6 @@ class ManagedProcess:
                 return False
 
     def _reader_loop(self, chunk_size: int = 4096):
-        """Background thread: reads stdout and pushes delimited lines into the queue."""
         if self._proc is None or self._proc.stdout is None:
             self._queue.put(None)
             return
@@ -244,7 +241,6 @@ class ManagedProcess:
                     idx = idx_r
                 piece = buf[:idx]
                 buf = buf[idx + 1 :]
-                # FIX 8: Treat \r\n as a single line break (skip the trailing \n after \r)
                 if idx == idx_r and buf.startswith("\n"):
                     buf = buf[1:]
                 self._queue.put(("line", piece))
@@ -254,8 +250,6 @@ class ManagedProcess:
         self._queue.put(None)
 
     def iter_events(self, timeout: float = 0.3, chunk_size: int = 4096):
-        """Yield ('line', text) from the reader thread queue."""
-        # chunk_size is kept for API compatibility but ignored here.
         while True:
             if self._terminated:
                 break
@@ -263,7 +257,6 @@ class ManagedProcess:
                 item = self._queue.get(timeout=timeout)
             except queue.Empty:
                 if self._proc is not None and self._proc.poll() is not None:
-                    # Process ended; drain remaining items
                     while True:
                         try:
                             item = self._queue.get_nowait()
@@ -271,7 +264,6 @@ class ManagedProcess:
                             return
                         if item is None:
                             return
-                        yield item
                 continue
             if item is None:
                 break
@@ -473,7 +465,6 @@ class ModernSlider(tk.Frame):
     def _on_entry(self, _=None):
         try:
             v = float(self.entry_var.get())
-            # FIX 6: Clamp typed values to the scale's [from_, to] range
             sc_from = float(self.scale.cget("from"))
             sc_to = float(self.scale.cget("to"))
             v = max(sc_from, min(v, sc_to))
@@ -489,7 +480,6 @@ class ModernSlider(tk.Frame):
             return float(self.var.get())
 
     def set(self, v: float):
-        # FIX 6: Clamp when programmatically setting as well
         sc_from = float(self.scale.cget("from"))
         sc_to = float(self.scale.cget("to"))
         v = max(sc_from, min(v, sc_to))
@@ -539,7 +529,7 @@ class RCRApp(tk.Tk):
         super().__init__()
         self.title(f"{APP_TITLE}  —  RuleFlow Chain Runner")
         self.configure(bg=THEME.bg)
-        self.geometry("1180x880")
+        self.geometry("1280x1000")
         self.minsize(980, 680)
 
         self._running = False
@@ -558,8 +548,6 @@ class RCRApp(tk.Tk):
         self._dev_var = tk.StringVar(value="auto")
 
         self._build_ui()
-        # FIX 3: Apply the "balanced" preset to sliders so the UI state matches
-        # the visually-selected default mode on startup.
         self._set_mode("balanced")
         self._start_polling()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -582,7 +570,7 @@ class RCRApp(tk.Tk):
 
         bottom = tk.Frame(paned, bg=THEME.bg)
         self._build_log_panel(bottom)
-        paned.add(bottom, height=180, minsize=100)
+        paned.add(bottom, height=300, minsize=150)
 
         self._build_footer(main)
 
@@ -648,7 +636,6 @@ class RCRApp(tk.Tk):
         wrap.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(win, width=e.width))
 
-        # FIX 2 + 7: Bind mousewheel locally (not globally) and add Linux support
         def _on_mousewheel(e):
             canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
             return "break"
@@ -796,7 +783,6 @@ class RCRApp(tk.Tk):
         wrap.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(win, width=e.width))
 
-        # FIX 2 + 7: Local mousewheel binds + Linux support
         def _on_mousewheel(e):
             canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
             return "break"
@@ -875,13 +861,29 @@ class RCRApp(tk.Tk):
         ModernButton(search_row, text="↑ Prev", variant="secondary", command=lambda: self._search_log(-1)).pack(side="left", padx=(0, 4))
         ModernButton(search_row, text="↓ Next", variant="secondary", command=lambda: self._search_log(1)).pack(side="left")
 
-        self._log = scrolledtext.ScrolledText(
-            card, bg="#0d0f14", fg=THEME.fg, insertbackground=THEME.accent,
+        log_frame = tk.Frame(card, bg=THEME.card)
+        log_frame.pack(fill="both", expand=True)
+
+        self._hbar = tk.Scrollbar(log_frame, orient="horizontal", bg=THEME.surface, troughcolor=THEME.bg)
+        self._hbar.pack(side="bottom", fill="x")
+        self._vbar = tk.Scrollbar(log_frame, orient="vertical", bg=THEME.surface, troughcolor=THEME.bg)
+        self._vbar.pack(side="right", fill="y")
+
+        self._log = tk.Text(
+            log_frame,
+            bg="#0d0f14", fg=THEME.fg, insertbackground=THEME.accent,
             font=MONO, relief="flat", bd=0,
             highlightbackground=THEME.border, highlightthickness=1,
-            wrap="word", state="disabled"
+            wrap="none",
+            width=120,
+            xscrollcommand=self._hbar.set,
+            yscrollcommand=self._vbar.set,
+            state="disabled"
         )
-        self._log.pack(fill="both", expand=True)
+        self._log.pack(side="left", fill="both", expand=True)
+        self._hbar.config(command=self._log.xview)
+        self._vbar.config(command=self._log.yview)
+
         self._log.tag_config("search_hit", background=THEME.info, foreground="#0a0a0a")
 
         self._log.bind("<MouseWheel>", self._on_log_scroll)
@@ -960,14 +962,11 @@ class RCRApp(tk.Tk):
     # ── Footer ────────────────────────────────────────────────────────
 
     def _build_footer(self, master):
-        # Top separator line
         tk.Frame(master, bg=THEME.border, height=1).pack(side="bottom", fill="x")
 
-        # Action bar
         bar = tk.Frame(master, bg=THEME.surface, padx=24, pady=18)
         bar.pack(side="bottom", fill="x")
 
-        # Status indicator (left)
         status_box = tk.Frame(bar, bg=THEME.surface)
         status_box.pack(side="left")
         self._status_dot = tk.Label(
@@ -981,7 +980,6 @@ class RCRApp(tk.Tk):
         )
         self._status_label.pack(side="left")
 
-        # Action buttons (right)
         btn_box = tk.Frame(bar, bg=THEME.surface)
         btn_box.pack(side="right")
 
@@ -1008,10 +1006,14 @@ class RCRApp(tk.Tk):
         self._mode_var.set(mode)
         for value, card in self._mode_cards.items():
             card.set_selected(value == mode)
+        # Updated presets per user request:
+        # Maximum: gg=500, gp=1000
+        # Balanced: unchanged (gg=300, gp=600)
+        # Fast: gg=150, gp=300
         presets = {
-            "maximum": dict(depth=10, gg=300, gp=600, th=2.0, bm=256, tp=10, ts=10, rk=100000, ms=5, mf=10, pr="medium_memory"),
+            "maximum": dict(depth=10, gg=500, gp=1000, th=2.0, bm=256, tp=10, ts=10, rk=100000, ms=5, mf=10, pr="medium_memory"),
             "balanced": dict(depth=6, gg=300, gp=600, th=1.0, bm=256, tp=6, ts=6, rk=75000, ms=4, mf=8, pr="medium_memory"),
-            "fast": dict(depth=3, gg=300, gp=600, th=0.5, bm=256, tp=3, ts=3, rk=50000, ms=3, mf=5, pr="medium_memory"),
+            "fast": dict(depth=3, gg=150, gp=300, th=0.5, bm=256, tp=3, ts=3, rk=50000, ms=3, mf=5, pr="medium_memory"),
         }
         if mode in presets and hasattr(self, "_adv_depth"):
             p = presets[mode]
@@ -1180,7 +1182,6 @@ class RCRApp(tk.Tk):
             self._log_line_count += content.count("\n")
 
         else:
-            # fallback – just insert
             self._mirror_to_disk(content)
             self._log.insert("end", content)
             self._log_line_count += content.count("\n")
@@ -1241,7 +1242,6 @@ class RCRApp(tk.Tk):
         self._finish(aborted=True)
 
     def _finish(self, aborted: bool = False, error: bool = False):
-        # Prevent double-finish if user already stopped
         if not self._running:
             return
         self._running = False
@@ -1306,7 +1306,6 @@ class RCRApp(tk.Tk):
 
         self._mem_monitor.set_child_pid(self._process.pid)
 
-        # Keep a local reference so _stop() can't wipe it mid-loop
         proc = self._process
         for kind, text in proc.iter_events(timeout=0.3):
             if self._cancel_event.is_set():
@@ -1315,7 +1314,6 @@ class RCRApp(tk.Tk):
             if not text:
                 continue
 
-            # FIX 4: Remove the extra '\n' here — _log_line already adds one.
             clean_text = text.rstrip('\r')
             self._log_line(clean_text)
 
@@ -1324,7 +1322,6 @@ class RCRApp(tk.Tk):
         self._mem_monitor.set_child_pid(None)
         gc.collect()
 
-        # FIX 5: Don't suggest low-memory if the user manually cancelled the run.
         if rc not in (0, None) and not self._cancel_event.is_set() and self._check_for_oom():
             self._log_error(
                 "This looks like an out-of-memory failure (allocation error / process killed).")
