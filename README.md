@@ -66,7 +66,7 @@ You can run the pipeline via the classic **bash script** (`ruleflow.sh`) or thro
 - **OOM auto-recovery** — Detects out-of-memory crashes and offers one-click low-memory preset
 - **Legacy vs MAB ranker** — Choose exhaustive or adaptive ranking without editing commands
 - **Tabbed configuration** — Pipeline, Output & Ranker, and Advanced settings
-
+[![rcr-midrun.jpg](https://i.postimg.cc/Y9JcRwTw/rcr-midrun.jpg)](https://postimg.cc/VrBHs2Y7)
 ---
 
 ## Requirements
