@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-RCR v0.3  —  RuleFlow Chain Runner
+RCR v0.5  —  RuleFlow Chain Runner (Cross-Platform)
 Graphical front-end for: rulest_v2.py -> concentrator.py -> ranker.py
+Fully compatible with Windows 10+ and Linux (X11/Wayland).
 """
 
 import tkinter as tk
@@ -16,14 +17,69 @@ import re
 import queue
 import time
 import gc
-import select
 from dataclasses import dataclass
 from typing import Optional, List, Tuple, Callable
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# ── Platform bootstrap ─────────────────────────────────────────────────────
+
+def _set_dpi_awareness() -> None:
+    """Enable DPI awareness on Windows so the GUI renders correctly on
+    high-DPI displays (4K monitors, laptops with scaling > 100%)."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)  # type: ignore[attr-defined]
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
+
+_set_dpi_awareness()
+
+# On Windows, force UTF-8 for stdin/stdout/stderr so that rule files,
+# wordlists and log output containing non-ASCII characters are handled
+# identically to Linux.
+if sys.platform == "win32":
+    import io
+    if sys.stdout.encoding != "utf-8":
+        try:
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
+        except Exception:
+            pass
+
+# SCRIPT_DIR must resolve correctly whether we are running from source or
+# from a frozen PyInstaller/pex bundle.
+if getattr(sys, "frozen", False):
+    SCRIPT_DIR = os.path.dirname(sys.executable)
+else:
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 APP_TITLE = "RCR - RuleFlow Chain Runner"
 
-# ── Theme ────────────────────────────────────────────────────────────────────
+# ── Cross-platform font resolution ─────────────────────────────────────────
+
+if sys.platform == "win32":
+    FONT_UI = "Segoe UI"
+    FONT_MONO = "Consolas"
+else:
+    # Linux / macOS fallbacks.  Tkinter will degrade gracefully if the
+    # first choice is missing, but DejaVu is present on almost all distros.
+    FONT_UI = "DejaVu Sans"
+    FONT_MONO = "DejaVu Sans Mono"
+
+
+def ui_font(size: int = 10, weight: str = "normal") -> Tuple[str, int, str]:
+    return (FONT_UI, size, weight)
+
+
+def mono_font(size: int = 9) -> Tuple[str, int]:
+    return (FONT_MONO, size)
+
+
+# ── Theme ──────────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
 class Theme:
@@ -70,19 +126,18 @@ class _ThemeProxy:
 
     @property
     def current(self) -> Theme:
-        return self._current
+        return self._current  # type: ignore[has-type]
 
     def set(self, theme: Theme):
         object.__setattr__(self, "_current", theme)
 
     def __getattr__(self, item):
-        return getattr(self._current, item)
+        return getattr(self._current, item)  # type: ignore[has-type]
 
 
 THEME = _ThemeProxy(DARK_THEME)
-MONO = ("JetBrains Mono", 9) if sys.platform != "win32" else ("Consolas", 9)
 
-# ── ANSI → tkinter mapping ───────────────────────────────────────────────────
+# ── ANSI → tkinter mapping ─────────────────────────────────────────────────
 
 # Palette used when the log panel has a dark background (default).
 ANSI_COLOURS_DARK = {
@@ -156,7 +211,7 @@ def normalize_progress_bars(text: str) -> str:
     return _TQDM_BAR_RE.sub(_replace, text)
 
 
-# ── Theme switching (light / dark) ──────────────────────────────────────────
+# ── Theme switching (light / dark) ─────────────────────────────────────────
 
 _TK_COLOR_OPTIONS = (
     "bg", "background", "fg", "foreground",
@@ -212,7 +267,7 @@ OOM_PATTERNS = re.compile(
 )
 
 
-# ── Memory Monitor ───────────────────────────────────────────────────────────
+# ── Memory Monitor ─────────────────────────────────────────────────────────
 
 class MemoryMonitor:
     def __init__(self, threshold_mb: float = 6144.0):
@@ -264,7 +319,7 @@ class MemoryMonitor:
         return f"{mb:.0f} MB"
 
 
-# ── Bounded Log Queue ────────────────────────────────────────────────────────
+# ── Bounded Log Queue ──────────────────────────────────────────────────────
 
 class BoundedLogQueue:
     def __init__(self, maxsize: int = 4000):
@@ -291,7 +346,7 @@ class BoundedLogQueue:
             return d
 
 
-# ── Process Wrapper ──────────────────────────────────────────────────────────
+# ── Process Wrapper ────────────────────────────────────────────────────────
 
 class ManagedProcess:
     def __init__(self):
@@ -310,15 +365,21 @@ class ManagedProcess:
             if self._proc is not None:
                 return False
             try:
-                self._proc = subprocess.Popen(
-                    cmd,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    bufsize=0,
-                    cwd=cwd,
-                    env=env,
-                )
+                popen_kwargs = {
+                    "stdin": subprocess.DEVNULL,
+                    "stdout": subprocess.PIPE,
+                    "stderr": subprocess.STDOUT,
+                    "bufsize": 0,
+                    "cwd": cwd,
+                    "env": env,
+                }
+                # On Windows, running from a tkinter GUI without a console
+                # attached will cause every subprocess to spawn a visible CMD
+                # window.  CREATE_NO_WINDOW suppresses that.
+                if sys.platform == "win32":
+                    popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+
+                self._proc = subprocess.Popen(cmd, **popen_kwargs)
                 self._terminated = False
                 self._queue = queue.Queue()
                 self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
@@ -365,7 +426,7 @@ class ManagedProcess:
                 else:
                     idx = idx_r
                 piece = buf[:idx]
-                buf = buf[idx + 1 :]
+                buf = buf[idx + 1:]
                 if idx == idx_r and buf.startswith("\n"):
                     buf = buf[1:]
                 self._queue.put(("line", piece))
@@ -404,12 +465,26 @@ class ManagedProcess:
                 try:
                     self._proc.wait(timeout=0.5)
                 except subprocess.TimeoutExpired:
+                    # On Windows, killing the parent often leaves orphaned
+                    # child processes (e.g. Python multiprocessing workers).
+                    # If psutil is available, walk the tree and kill them.
+                    if sys.platform == "win32":
+                        try:
+                            import psutil
+                            parent = psutil.Process(self._proc.pid)
+                            for child in parent.children(recursive=True):
+                                try:
+                                    child.kill()
+                                except psutil.NoSuchProcess:
+                                    pass
+                        except Exception:
+                            pass
                     self._proc.kill()
                     self._proc.wait(timeout=wait)
             except Exception:
                 pass
             finally:
-                if self._proc.stdout:
+                if self._proc and self._proc.stdout:
                     try:
                         self._proc.stdout.close()
                     except Exception:
@@ -437,7 +512,7 @@ class ModernButton(tk.Button):
             "ghost": (THEME.bg, THEME.fg2, THEME.surface),
         }
         bg, fg, hover_bg = colors.get(variant, colors["primary"])
-        btn_font = font or ("Segoe UI", 10, "bold" if variant == "primary" else "normal")
+        btn_font = font or ui_font(10, "bold" if variant == "primary" else "normal")
         btn_padx = padx if padx is not None else 14
         btn_pady = pady if pady is not None else 7
         super().__init__(
@@ -473,7 +548,7 @@ class Section(tk.Frame):
         )
         tk.Label(
             self, text=title, bg=THEME.card, fg=THEME.accent,
-            font=("Segoe UI", 10, "bold")
+            font=ui_font(10, "bold")
         ).pack(anchor="w", pady=(0, 8))
         self.body = tk.Frame(self, bg=THEME.card)
         self.body.pack(fill="both", expand=True)
@@ -491,16 +566,16 @@ class Expander(tk.Frame):
         head.pack(fill="x", padx=12, pady=8)
 
         self._arrow = tk.Label(head, text="▸", bg=THEME.card, fg=THEME.accent,
-                                font=("Segoe UI", 10, "bold"), width=2)
+                                font=ui_font(10, "bold"), width=2)
         self._arrow.pack(side="left")
 
         titles = tk.Frame(head, bg=THEME.card)
         titles.pack(side="left", fill="x", expand=True)
         tk.Label(titles, text=title, bg=THEME.card, fg=THEME.fg,
-                 font=("Segoe UI", 10, "bold"), anchor="w").pack(fill="x")
+                 font=ui_font(10, "bold"), anchor="w").pack(fill="x")
         if subtitle:
             tk.Label(titles, text=subtitle, bg=THEME.card, fg=THEME.fg2,
-                      font=("Segoe UI", 8), anchor="w").pack(fill="x")
+                      font=ui_font(8), anchor="w").pack(fill="x")
 
         self.body = tk.Frame(self, bg=THEME.card, padx=12, pady=10)
 
@@ -527,13 +602,13 @@ class FilePicker(tk.Frame):
     def __init__(self, master, label: str, **kw):
         super().__init__(master, bg=THEME.card, **kw)
         tk.Label(self, text=label, bg=THEME.card, fg=THEME.fg2,
-                 font=("Segoe UI", 9), width=18, anchor="w").pack(side="left")
+                 font=ui_font(9), width=18, anchor="w").pack(side="left")
         self.var = tk.StringVar()
         self.entry = tk.Entry(
             self, textvariable=self.var, bg=THEME.surface, fg=THEME.fg,
             insertbackground=THEME.accent, relief="flat", bd=0,
             highlightbackground=THEME.border, highlightthickness=1,
-            font=MONO
+            font=mono_font()
         )
         self.entry.pack(side="left", fill="x", expand=True, padx=(0, 8), ipady=4)
         ModernButton(self, text="Browse", command=self._browse, variant="secondary").pack(side="left")
@@ -557,7 +632,7 @@ class ModernSlider(tk.Frame):
         super().__init__(master, bg=THEME.card, **kw)
         self.is_float = is_float
         tk.Label(self, text=label, bg=THEME.card, fg=THEME.fg2,
-                 font=("Segoe UI", 9), width=24, anchor="w").pack(side="left")
+                 font=ui_font(9), width=24, anchor="w").pack(side="left")
         self.var = tk.DoubleVar(value=default)
         self.scale = tk.Scale(
             self, variable=self.var, from_=from_, to=to, resolution=resolution,
@@ -571,14 +646,14 @@ class ModernSlider(tk.Frame):
             self, textvariable=self.entry_var, bg=THEME.surface, fg=THEME.accent,
             insertbackground=THEME.accent, relief="flat", bd=0,
             highlightbackground=THEME.border, highlightthickness=1,
-            font=MONO, width=9, justify="right"
+            font=mono_font(), width=9, justify="right"
         )
         self.entry.pack(side="left")
         self.entry.bind("<FocusOut>", self._on_entry)
         self.entry.bind("<Return>", self._on_entry)
         if unit:
             tk.Label(self, text=unit, bg=THEME.card, fg=THEME.fg2,
-                     font=("Segoe UI", 8)).pack(side="left", padx=(4, 0))
+                     font=ui_font(8)).pack(side="left", padx=(4, 0))
 
     def _fmt(self, v) -> str:
         v = float(v)
@@ -626,9 +701,9 @@ class ModeCard(tk.Frame):
         self.command = command
         tk.Label(self, text=title, bg=self.cget("bg"),
                  fg=THEME.accent if selected else THEME.fg,
-                 font=("Segoe UI", 10, "bold")).pack(anchor="w")
+                 font=ui_font(10, "bold")).pack(anchor="w")
         tk.Label(self, text=subtitle, bg=self.cget("bg"), fg=THEME.fg2,
-                 font=("Segoe UI", 8), justify="left").pack(anchor="w", pady=(3, 0))
+                 font=ui_font(8), justify="left").pack(anchor="w", pady=(3, 0))
         for w in [self] + list(self.winfo_children()):
             w.bind("<Button-1>", lambda _e: self.command and self.command(self.value))
 
@@ -641,6 +716,28 @@ class ModeCard(tk.Frame):
             child.config(bg=bg)
             if isinstance(child, tk.Label) and "bold" in str(child.cget("font")):
                 child.config(fg=fg)
+
+
+class StageCheck(tk.Frame):
+    """A checkbox widget for toggling pipeline stages with a description."""
+    def __init__(self, master, label: str, description: str, variable: tk.BooleanVar,
+                 command: Optional[Callable] = None, **kw):
+        super().__init__(master, bg=THEME.card, **kw)
+        self.variable = variable
+        self.command = command
+        self.cb = tk.Checkbutton(
+            self, text=label, variable=variable, bg=THEME.card, fg=THEME.fg,
+            selectcolor=THEME.surface, activebackground=THEME.card,
+            activeforeground=THEME.fg, font=ui_font(10, "bold"),
+            command=self._on_toggle
+        )
+        self.cb.pack(anchor="w")
+        tk.Label(self, text=description, bg=THEME.card, fg=THEME.fg2,
+                 font=ui_font(8), justify="left", anchor="w").pack(anchor="w", padx=(24, 0))
+
+    def _on_toggle(self):
+        if self.command:
+            self.command()
 
 
 # ── Main Application ─────────────────────────────────────────────────────────
@@ -673,6 +770,11 @@ class RCRApp(tk.Tk):
 
         self._devices: List[Tuple[str, str]] = [("auto", "Auto-detect (recommended)")]
         self._dev_var = tk.StringVar(value="auto")
+
+        # Stage selection variables
+        self._run_rulest = tk.BooleanVar(value=True)
+        self._run_conc = tk.BooleanVar(value=True)
+        self._run_ranker = tk.BooleanVar(value=True)
 
         self._build_ui()
         self._set_mode("balanced")
@@ -708,25 +810,25 @@ class RCRApp(tk.Tk):
         title_grp = tk.Frame(hdr, bg=THEME.bg)
         title_grp.pack(side="left")
         tk.Label(title_grp, text=f"◈ {APP_TITLE}", bg=THEME.bg, fg=THEME.fg,
-                 font=("Segoe UI", 17, "bold")).pack(anchor="w")
+                 font=ui_font(17, "bold")).pack(anchor="w")
         tk.Label(title_grp, text="rulest  →  concentrator  →  ranker", bg=THEME.bg,
-                 fg=THEME.fg2, font=("Segoe UI", 10)).pack(anchor="w", pady=(1, 0))
+                 fg=THEME.fg2, font=ui_font(10)).pack(anchor="w", pady=(1, 0))
 
         self._stage_frame = tk.Frame(hdr, bg=THEME.bg)
         self._stage_frame.pack(side="right")
         self._stage_dots = []
         for i, name in enumerate(["rulest", "concentrator", "ranker"], 1):
             dot = tk.Label(self._stage_frame, text=f"  {i}  ", bg=THEME.surface, fg=THEME.fg2,
-                            font=("Segoe UI", 9, "bold"), padx=8, pady=4)
+                            font=ui_font(9, "bold"), padx=8, pady=4)
             dot.pack(side="left", padx=(0, 6))
             self._stage_dots.append(dot)
 
-        self._mem_label = tk.Label(hdr, text="RAM: —", bg=THEME.bg, fg=THEME.fg2, font=("Segoe UI", 9))
+        self._mem_label = tk.Label(hdr, text="RAM: —", bg=THEME.bg, fg=THEME.fg2, font=ui_font(9))
         self._mem_label.pack(side="right", padx=(0, 16))
 
         self._theme_btn = ModernButton(
             hdr, text="☀  Light mode", variant="secondary",
-            command=self._toggle_theme, font=("Segoe UI", 9)
+            command=self._toggle_theme, font=ui_font(9)
         )
         self._theme_btn.pack(side="right", padx=(0, 16))
 
@@ -738,7 +840,7 @@ class RCRApp(tk.Tk):
             pass
         style.configure("RCR.TNotebook", background=THEME.bg, borderwidth=0)
         style.configure("RCR.TNotebook.Tab", background=THEME.surface, foreground=THEME.fg2,
-                        padding=(16, 8), font=("Segoe UI", 10, "bold"))
+                        padding=(16, 8), font=ui_font(10, "bold"))
         style.map("RCR.TNotebook.Tab",
                   background=[("selected", THEME.card)],
                   foreground=[("selected", THEME.accent)])
@@ -801,6 +903,40 @@ class RCRApp(tk.Tk):
     def _build_pipeline_tab(self, root):
         wrap = self._make_scrollable_container(root)
 
+        # ── Stage Selection Checkboxes ──────────────────────────────
+        stages = Section(wrap, "Step 0 — Select Stages to Run")
+        stages.pack(fill="x", pady=(0, 10))
+        self._stage_checks_frame = tk.Frame(stages.body, bg=THEME.card)
+        self._stage_checks_frame.pack(fill="x")
+
+        self._check_rulest = StageCheck(
+            self._stage_checks_frame, "1. rulest", "Extract rules from base + target wordlists",
+            self._run_rulest, command=self._on_stage_toggle
+        )
+        self._check_rulest.pack(side="left", fill="both", expand=True, padx=(0, 8))
+
+        self._check_conc = StageCheck(
+            self._stage_checks_frame, "2. concentrator", "Optimize and clean extracted rules",
+            self._run_conc, command=self._on_stage_toggle
+        )
+        self._check_conc.pack(side="left", fill="both", expand=True, padx=(0, 8))
+
+        self._check_ranker = StageCheck(
+            self._stage_checks_frame, "3. ranker", "Score and rank rules against cracked passwords",
+            self._run_ranker, command=self._on_stage_toggle
+        )
+        self._check_ranker.pack(side="left", fill="both", expand=True)
+
+        # ── Conditional Rules File Picker ─────────────────────────────
+        self._rules_file_section = Section(wrap, "External Rules Input")
+        self._rules_file_picker = FilePicker(self._rules_file_section.body, "Rules file")
+        self._rules_file_picker.pack(fill="x", pady=3)
+        tk.Label(self._rules_file_section.body,
+                 text="Required when rulest is skipped. The selected rules file will be fed directly into concentrator and/or ranker depending on which stages are enabled.",
+                 bg=THEME.card, fg=THEME.fg2, font=ui_font(8), justify="left").pack(anchor="w", pady=(4, 0))
+        self._rules_file_section.pack(fill="x", pady=(0, 10))
+        self._rules_file_section.pack_forget()  # hidden by default
+
         files = Section(wrap, "Step 1 — Input Files")
         files.pack(fill="x", pady=(0, 10))
         self._base_wl = FilePicker(files.body, "Base wordlist"); self._base_wl.pack(fill="x", pady=3)
@@ -810,12 +946,12 @@ class RCRApp(tk.Tk):
         row = tk.Frame(files.body, bg=THEME.card)
         row.pack(fill="x", pady=(6, 0))
         tk.Label(row, text="Output directory", bg=THEME.card, fg=THEME.fg2,
-                 font=("Segoe UI", 9), width=18, anchor="w").pack(side="left")
+                 font=ui_font(9), width=18, anchor="w").pack(side="left")
         self._outdir_var = tk.StringVar(value=os.getcwd())
         tk.Entry(row, textvariable=self._outdir_var, bg=THEME.surface, fg=THEME.fg,
                  insertbackground=THEME.accent, relief="flat", bd=0,
                  highlightbackground=THEME.border, highlightthickness=1,
-                 font=MONO).pack(side="left", fill="x", expand=True, padx=(0, 8), ipady=4)
+                 font=mono_font()).pack(side="left", fill="x", expand=True, padx=(0, 8), ipady=4)
         ModernButton(row, text="Browse", variant="secondary",
                      command=lambda: self._outdir_var.set(filedialog.askdirectory() or self._outdir_var.get())
                      ).pack(side="left")
@@ -841,7 +977,7 @@ class RCRApp(tk.Tk):
         top = tk.Frame(device.body, bg=THEME.card)
         top.pack(fill="x")
         tk.Label(top, text="GPU / Accelerator", bg=THEME.card, fg=THEME.fg2,
-                 font=("Segoe UI", 9), width=18, anchor="w").pack(side="left")
+                 font=ui_font(9), width=18, anchor="w").pack(side="left")
         self._dev_combo = ttk.Combobox(top, textvariable=self._dev_var,
                                         values=[d[1] for d in self._devices], state="readonly", width=38)
         self._dev_combo.set(self._devices[0][1])
@@ -849,8 +985,20 @@ class RCRApp(tk.Tk):
         ModernButton(top, text="⟳ Scan", command=self._scan_devices, variant="secondary").pack(side="left")
         self._dev_status = tk.Label(device.body,
             text="Click 'Scan' to detect OpenCL hardware. Auto-detect works for most setups.",
-            bg=THEME.card, fg=THEME.fg2, font=("Segoe UI", 9), anchor="w")
+            bg=THEME.card, fg=THEME.fg2, font=ui_font(9), anchor="w")
         self._dev_status.pack(fill="x", pady=(8, 0))
+
+    def _on_stage_toggle(self):
+        """Show or hide the external rules file picker depending on whether
+        rulest is enabled."""
+        if self._run_rulest.get():
+            self._rules_file_section.pack_forget()
+        else:
+            self._rules_file_section.pack(fill="x", pady=(0, 10), before=self._base_wl.master.master)
+            # Re-order: insert after stage selection, before input files
+            # Since pack doesn't support before/after well, we just show it.
+            # The widget was already created in the scrollable wrap.
+            self._rules_file_section.pack(fill="x", pady=(0, 10))
 
     # -- Tab: Output & Ranker -----------------------------------------
 
@@ -863,13 +1011,13 @@ class RCRApp(tk.Tk):
         tk.Checkbutton(
             conc.body, text="Expanded format (space-separated operators)",
             variable=self._concfmt_var, bg=THEME.card, fg=THEME.fg, selectcolor=THEME.surface,
-            activebackground=THEME.card, activeforeground=THEME.fg, font=("Segoe UI", 9)
+            activebackground=THEME.card, activeforeground=THEME.fg, font=ui_font(9)
         ).pack(anchor="w")
         tk.Label(
             conc.body,
             text="Expanded: each operator and argument is separated by spaces — easier to read and debug.\n"
                  "Compact: rules on single lines — slightly faster for hashcat to load.",
-            bg=THEME.card, fg=THEME.fg2, font=("Segoe UI", 9), justify="left"
+            bg=THEME.card, fg=THEME.fg2, font=ui_font(9), justify="left"
         ).pack(anchor="w", pady=(8, 0))
 
         rk = Section(wrap, "Step 4 — Ranker Strategy")
@@ -883,7 +1031,7 @@ class RCRApp(tk.Tk):
             leg_frame, text="Legacy (Exhaustive) — RECOMMENDED for most dictionaries",
             variable=self._legacy_var, value=True, bg=THEME.card, fg=THEME.accent,
             selectcolor=THEME.surface, activebackground=THEME.card, activeforeground=THEME.accent,
-            font=("Segoe UI", 10, "bold")
+            font=ui_font(10, "bold")
         ).pack(anchor="w")
         tk.Label(
             leg_frame,
@@ -894,7 +1042,7 @@ class RCRApp(tk.Tk):
                  "  and there's little to be gained by skipping candidates early\n"
                  "• Maximum statistical accuracy — no rule is ever skipped\n"
                  "• Lower, flatter RAM usage — no bandit state arrays to maintain",
-            bg=THEME.card, fg=THEME.fg2, font=("Segoe UI", 9), justify="left"
+            bg=THEME.card, fg=THEME.fg2, font=ui_font(9), justify="left"
         ).pack(anchor="w", pady=(8, 0))
 
         mab_frame = tk.Frame(rk.body, bg=THEME.card, padx=12, pady=12,
@@ -904,7 +1052,7 @@ class RCRApp(tk.Tk):
             mab_frame, text="MAB (Multi-Armed Bandit) — for very large / imbalanced rule sets",
             variable=self._legacy_var, value=False, bg=THEME.card, fg=THEME.fg,
             selectcolor=THEME.surface, activebackground=THEME.card, activeforeground=THEME.fg,
-            font=("Segoe UI", 10)
+            font=ui_font(10)
         ).pack(anchor="w")
         tk.Label(
             mab_frame,
@@ -915,7 +1063,7 @@ class RCRApp(tk.Tk):
                  "  make it SLOWER than Legacy, not faster — there's less waste for it to cut\n"
                  "• Slightly lower statistical confidence for very rare rules\n"
                  "• Keeps extra bandit state (per-rule counters) in RAM for the whole run",
-            bg=THEME.card, fg=THEME.fg2, font=("Segoe UI", 9), justify="left"
+            bg=THEME.card, fg=THEME.fg2, font=ui_font(9), justify="left"
         ).pack(anchor="w", pady=(8, 0))
 
     # -- Tab: Advanced -----------------------------------------------
@@ -966,7 +1114,7 @@ class RCRApp(tk.Tk):
         tk.Label(exp4.body,
                  text="If a stage crashes with an out-of-memory error, switch to Low and re-run —\n"
                       "the app will also suggest this automatically when it detects one.",
-                 bg=THEME.card, fg=THEME.fg2, font=("Segoe UI", 8), justify="left").pack(anchor="w", pady=(0, 6))
+                 bg=THEME.card, fg=THEME.fg2, font=ui_font(8), justify="left").pack(anchor="w", pady=(0, 6))
         preset_frame = tk.Frame(exp4.body, bg=THEME.card)
         preset_frame.pack(anchor="w")
         self._preset_var = tk.StringVar(value="medium_memory")
@@ -975,7 +1123,7 @@ class RCRApp(tk.Tk):
             tk.Radiobutton(preset_frame, text=lbl, variable=self._preset_var, value=val,
                            bg=THEME.card, fg=THEME.fg, selectcolor=THEME.surface,
                            activebackground=THEME.card, activeforeground=THEME.fg,
-                           font=("Segoe UI", 9)).pack(side="left", padx=(0, 16))
+                           font=ui_font(9)).pack(side="left", padx=(0, 16))
 
     # ── Log Panel ─────────────────────────────────────────────────────
 
@@ -988,8 +1136,8 @@ class RCRApp(tk.Tk):
         toolbar.pack(fill="x", pady=(0, 6))
 
         tk.Label(toolbar, text="Execution Log", bg=THEME.card, fg=THEME.accent,
-                 font=("Segoe UI", 10, "bold")).pack(side="left")
-        self._log_status = tk.Label(toolbar, text="Ready", bg=THEME.card, fg=THEME.fg2, font=("Segoe UI", 9))
+                 font=ui_font(10, "bold")).pack(side="left")
+        self._log_status = tk.Label(toolbar, text="Ready", bg=THEME.card, fg=THEME.fg2, font=ui_font(9))
         self._log_status.pack(side="left", padx=(12, 0))
 
         self._follow_btn = ModernButton(toolbar, text="⏷ Following", variant="secondary",
@@ -1000,11 +1148,11 @@ class RCRApp(tk.Tk):
 
         search_row = tk.Frame(card, bg=THEME.card)
         search_row.pack(fill="x", pady=(0, 6))
-        tk.Label(search_row, text="Search:", bg=THEME.card, fg=THEME.fg2, font=("Segoe UI", 9)).pack(side="left")
+        tk.Label(search_row, text="Search:", bg=THEME.card, fg=THEME.fg2, font=ui_font(9)).pack(side="left")
         self._search_var = tk.StringVar()
         search_entry = tk.Entry(search_row, textvariable=self._search_var, bg=THEME.surface, fg=THEME.fg,
                                  insertbackground=THEME.accent, relief="flat", bd=0,
-                                 highlightbackground=THEME.border, highlightthickness=1, font=MONO)
+                                 highlightbackground=THEME.border, highlightthickness=1, font=mono_font())
         search_entry.pack(side="left", fill="x", expand=True, padx=(6, 6), ipady=3)
         search_entry.bind("<Return>", lambda _e: self._search_log(1))
         ModernButton(search_row, text="↑ Prev", variant="secondary", command=lambda: self._search_log(-1)).pack(side="left", padx=(0, 4))
@@ -1021,7 +1169,7 @@ class RCRApp(tk.Tk):
         self._log = tk.Text(
             log_frame,
             bg="#0d0f14", fg=THEME.fg, insertbackground=THEME.accent,
-            font=MONO, relief="flat", bd=0,
+            font=mono_font(), relief="flat", bd=0,
             highlightbackground=THEME.border, highlightthickness=1,
             wrap="none",
             width=120,
@@ -1120,12 +1268,12 @@ class RCRApp(tk.Tk):
         status_box.pack(side="left")
         self._status_dot = tk.Label(
             status_box, text="●", bg=THEME.surface, fg=THEME.success,
-            font=("Segoe UI", 10)
+            font=ui_font(10)
         )
         self._status_dot.pack(side="left", padx=(0, 8))
         self._status_label = tk.Label(
             status_box, text="Ready to start", bg=THEME.surface,
-            fg=THEME.fg2, font=("Segoe UI", 10)
+            fg=THEME.fg2, font=ui_font(10)
         )
         self._status_label.pack(side="left")
 
@@ -1134,14 +1282,14 @@ class RCRApp(tk.Tk):
 
         self._stop_btn = ModernButton(
             btn_box, text="⏹  Stop", command=self._stop, variant="danger",
-            font=("Segoe UI", 11, "bold"), padx=28, pady=12
+            font=ui_font(11, "bold"), padx=28, pady=12
         )
         self._stop_btn.pack(side="right", padx=(12, 0))
         self._stop_btn.config(state="disabled")
 
         self._run_btn = ModernButton(
             btn_box, text="▶  Run Pipeline", command=self._run, variant="primary",
-            font=("Segoe UI", 11, "bold"), padx=28, pady=12
+            font=ui_font(11, "bold"), padx=28, pady=12
         )
         self._run_btn.pack(side="right")
 
@@ -1396,17 +1544,47 @@ class RCRApp(tk.Tk):
     # ── Pipeline Execution ────────────────────────────────────────
 
     def _validate(self) -> bool:
-        for label, path in [
-            ("Base wordlist", self._base_wl.get()),
-            ("Target wordlist", self._tgt_wl.get()),
-            ("Cracked passwords", self._cracked.get()),
-        ]:
-            if not path:
-                messagebox.showerror("Missing Input", f"{label} is required.")
+        # Check that at least one stage is selected
+        if not any([self._run_rulest.get(), self._run_conc.get(), self._run_ranker.get()]):
+            messagebox.showerror("No Stage Selected", "Please select at least one stage to run.")
+            return False
+
+        # If rulest is not selected but concentrator or ranker is, require external rules file
+        if not self._run_rulest.get() and (self._run_conc.get() or self._run_ranker.get()):
+            rules_path = self._rules_file_picker.get()
+            if not rules_path:
+                messagebox.showerror("Missing Rules File", "When skipping rulest, an external rules file is required. Please select one in the 'External Rules Input' section.")
                 return False
-            if not os.path.isfile(path):
-                messagebox.showerror("File Not Found", f"{label}:\n{path}\n\nFile does not exist.")
+            if not os.path.isfile(rules_path):
+                messagebox.showerror("File Not Found", f"Rules file not found:\n{rules_path}")
                 return False
+
+        # If rulest is selected, require base + target wordlists
+        if self._run_rulest.get():
+            for label, path in [
+                ("Base wordlist", self._base_wl.get()),
+                ("Target wordlist", self._tgt_wl.get()),
+            ]:
+                if not path:
+                    messagebox.showerror("Missing Input", f"{label} is required when running rulest.")
+                    return False
+                if not os.path.isfile(path):
+                    messagebox.showerror("File Not Found", f"{label}: {path} — File does not exist.")
+                    return False
+
+        # If ranker is selected, require cracked passwords and base wordlist
+        if self._run_ranker.get():
+            for label, path in [
+                ("Base wordlist", self._base_wl.get()),
+                ("Cracked passwords", self._cracked.get()),
+            ]:
+                if not path:
+                    messagebox.showerror("Missing Input", f"{label} is required when running ranker.")
+                    return False
+                if not os.path.isfile(path):
+                    messagebox.showerror("File Not Found", f"{label}: {path} — File does not exist.")
+                    return False
+
         return True
 
     def _run(self):
@@ -1483,11 +1661,19 @@ class RCRApp(tk.Tk):
         tail = "\n".join(self._recent_tail[-100:])
         return bool(OOM_PATTERNS.search(tail))
 
+    def _format_cmd_for_display(self, cmd: List[str]) -> str:
+        """Return a platform-appropriate shell-safe string for the log."""
+        if sys.platform == "win32":
+            # subprocess.list2cmdline produces the exact string Windows
+            # CreateProcess would receive — perfect for display.
+            return subprocess.list2cmdline(str(a) for a in cmd)
+        return " ".join(shlex.quote(str(a)) for a in cmd)
+
     def _run_step(self, cmd: List[str], label: str) -> int:
         self._log_system(f"{'─' * 50}")
         self._log_system(f"Stage: {label}")
         self._log_system(f"{'─' * 50}")
-        self._log_muted(f"$ {' '.join(shlex.quote(str(a)) for a in cmd)}")
+        self._log_muted(f"$ {self._format_cmd_for_display(cmd)}")
 
         self._process = ManagedProcess()
         env = os.environ.copy()
@@ -1549,19 +1735,15 @@ class RCRApp(tk.Tk):
     def _offer_low_memory_dialog(self):
         if messagebox.askyesno(
             "Possible out-of-memory failure",
-            "This stage appears to have failed because it ran out of memory "
-            "(host RAM or GPU VRAM).\n\n"
-            "Apply the Low-Memory preset now (lower bloom filter size, K, "
-            "genetic population, and MAB trial counts) so the next run is "
-            "less likely to hit the same wall?"
+            "This stage appears to have failed because it ran out of memory (host RAM or GPU VRAM). Apply the Low-Memory preset now (lower bloom filter size, K, genetic population, and MAB trial counts) so the next run is less likely to hit the same wall?"
         ):
             self._apply_low_memory()
 
     def _pipeline_thread(self):
-        outdir = self._outdir_var.get()
-        base_wl = self._base_wl.get()
-        tgt_wl = self._tgt_wl.get()
-        cracked = self._cracked.get()
+        outdir = os.path.normpath(self._outdir_var.get())
+        base_wl = os.path.normpath(self._base_wl.get()) if self._base_wl.get() else ""
+        tgt_wl = os.path.normpath(self._tgt_wl.get()) if self._tgt_wl.get() else ""
+        cracked = os.path.normpath(self._cracked.get()) if self._cracked.get() else ""
 
         depth = int(self._adv_depth.get())
         gen_gen = int(self._adv_gg.get())
@@ -1583,94 +1765,112 @@ class RCRApp(tk.Tk):
         rank_py = os.path.join(SCRIPT_DIR, "ranker.py")
         dev_args = self._device_args()
 
+        # ── Stage 1: rulest ─────────────────────────────────────────
         s1 = os.path.join(outdir, "stage1_raw.rule")
-        self.after(0, lambda: self._set_stage(1))
-        self.after(0, lambda: self._status_label.config(text="Stage 1/3: rulest…"))
+        if self._run_rulest.get():
+            self.after(0, lambda: self._set_stage(1))
+            self.after(0, lambda: self._status_label.config(text="Stage 1/3: rulest…"))
 
-        rc = self._run_step([
-            py, rulest_py, base_wl, tgt_wl,
-            "-o", s1,
-            "--max-depth", str(depth),
-            "--token-strip",
-            "--genetic",
-            "--genetic-generations", str(gen_gen),
-            "--genetic-pop", str(gen_pop),
-            "--target-hours", str(th),
-            "--bloom-mb", str(bm),
-            "--token-strip-max-prefix", str(tok_p),
-            "--token-strip-max-suffix", str(tok_s),
-            "--token-strip-workers", str(s0),
-        ] + dev_args, "rulest — rule extraction")
+            rc = self._run_step([
+                py, rulest_py, base_wl, tgt_wl,
+                "-o", s1,
+                "--max-depth", str(depth),
+                "--token-strip",
+                "--genetic",
+                "--genetic-generations", str(gen_gen),
+                "--genetic-pop", str(gen_pop),
+                "--target-hours", str(th),
+                "--bloom-mb", str(bm),
+                "--token-strip-max-prefix", str(tok_p),
+                "--token-strip-max-suffix", str(tok_s),
+                "--token-strip-workers", str(s0),
+            ] + dev_args, "rulest — rule extraction")
 
-        if self._cancel_event.is_set() or not self._stage_succeeded(rc, s1, "rulest"):
-            self.after(0, lambda: self._finish(error=True))
-            return
+            if self._cancel_event.is_set() or not self._stage_succeeded(rc, s1, "rulest"):
+                self.after(0, lambda: self._finish(error=True))
+                return
 
-        gc.collect()
-        self._log_system("Memory cleanup between stages…")
-
-        s2b = os.path.join(outdir, "stage2_cleaned")
-        self.after(0, lambda: self._set_stage(2))
-        self.after(0, lambda: self._status_label.config(text="Stage 2/3: concentrator…"))
-
-        conc_format = "expanded" if self._concfmt_var.get() else "line"
-        rc = self._run_step([
-            py, conc_py,
-            "-p", s1,
-            "--output_base_name", s2b,
-            "--output-format", conc_format,
-        ], "concentrator — rule optimization")
-
-        if self._cancel_event.is_set():
-            self.after(0, lambda: self._finish(error=True))
-            return
-
-        expected = s2b + "_processed.rule"
-        matches = [expected] if os.path.isfile(expected) else glob.glob(s2b + "*.rule")
-        if not matches:
-            fallback = sorted(
-                [f for f in glob.glob(os.path.join(outdir, "*.rule")) if os.path.abspath(f) != os.path.abspath(s1)],
-                key=os.path.getmtime, reverse=True
-            )
-            if fallback:
-                matches = [fallback[0]]
-                self._log_system(f"Using fallback output: {matches[0]}")
-        if not matches:
-            extra = f" (process also exited with code {rc})" if rc != 0 else ""
-            self._log_error(f"No concentrator output found: {s2b}*.rule{extra}")
-            self.after(0, lambda: self._finish(error=True))
-            return
-        elif rc != 0:
-            self._log_system(
-                f"concentrator exited with code {rc}, but its output file was written "
-                f"successfully ({matches[0]}) — continuing as if it succeeded."
-            )
-
-        cleaned = matches[0]
-        self._log_system(f"Using cleaned rules: {cleaned}")
-        gc.collect()
-
-        s3 = os.path.join(outdir, "stage3_ranking.csv")
-        self.after(0, lambda: self._set_stage(3))
-        self.after(0, lambda: self._status_label.config(text="Stage 3/3: ranker (this may take a while)…"))
-
-        cmd3 = [py, rank_py, "-w", base_wl, "-r", cleaned, "-c", cracked, "-o", s3,
-                "-k", str(rk), "--preset", preset] + dev_args
-        if legacy:
-            cmd3.append("--legacy")
-            self._log_system("Using Legacy (exhaustive) ranker — recommended default, full accuracy.")
+            gc.collect()
+            self._log_system("Memory cleanup between stages…")
         else:
-            cmd3 += ["--mab-screening-trials", str(ms), "--mab-final-trials", str(mf)]
-            self._log_system("Using MAB (adaptive) ranker — best for very large / imbalanced rule sets.")
+            # Use external rules file instead of rulest output
+            s1 = os.path.normpath(self._rules_file_picker.get())
+            self._log_system(f"Skipping rulest — using external rules: {s1}")
 
-        rc = self._run_step(cmd3, "ranker — rule scoring & ranking")
-        if self._cancel_event.is_set() or not self._stage_succeeded(rc, s3, "ranker"):
-            self.after(0, lambda: self._finish(error=True))
-            return
+        # ── Stage 2: concentrator ───────────────────────────────────
+        s2b = os.path.join(outdir, "stage2_cleaned")
+        cleaned = None
+        if self._run_conc.get():
+            self.after(0, lambda: self._set_stage(2))
+            self.after(0, lambda: self._status_label.config(text="Stage 2/3: concentrator…"))
+
+            conc_format = "expanded" if self._concfmt_var.get() else "line"
+            rc = self._run_step([
+                py, conc_py,
+                "-p", s1,
+                "--output_base_name", s2b,
+                "--output-format", conc_format,
+            ], "concentrator — rule optimization")
+
+            if self._cancel_event.is_set():
+                self.after(0, lambda: self._finish(error=True))
+                return
+
+            expected = s2b + "_processed.rule"
+            matches = [expected] if os.path.isfile(expected) else glob.glob(s2b + "*.rule")
+            if not matches:
+                fallback = sorted(
+                    [f for f in glob.glob(os.path.join(outdir, "*.rule")) if os.path.abspath(f) != os.path.abspath(s1)],
+                    key=os.path.getmtime, reverse=True
+                )
+                if fallback:
+                    matches = [fallback[0]]
+                    self._log_system(f"Using fallback output: {matches[0]}")
+            if not matches:
+                extra = f" (process also exited with code {rc})" if rc != 0 else ""
+                self._log_error(f"No concentrator output found: {s2b}*.rule{extra}")
+                self.after(0, lambda: self._finish(error=True))
+                return
+            elif rc != 0:
+                self._log_system(
+                    f"concentrator exited with code {rc}, but its output file was written "
+                    f"successfully ({matches[0]}) — continuing as if it succeeded."
+                )
+
+            cleaned = matches[0]
+            self._log_system(f"Using cleaned rules: {cleaned}")
+            gc.collect()
+        else:
+            # If concentrator is skipped, pass the rules file directly to ranker
+            cleaned = s1
+            self._log_system(f"Skipping concentrator — passing rules directly to ranker: {cleaned}")
+
+        # ── Stage 3: ranker ─────────────────────────────────────────
+        s3 = os.path.join(outdir, "stage3_ranking.csv")
+        if self._run_ranker.get():
+            self.after(0, lambda: self._set_stage(3))
+            self.after(0, lambda: self._status_label.config(text="Stage 3/3: ranker (this may take a while)…"))
+
+            cmd3 = [py, rank_py, "-w", base_wl, "-r", cleaned, "-c", cracked, "-o", s3,
+                    "-k", str(rk), "--preset", preset] + dev_args
+            if legacy:
+                cmd3.append("--legacy")
+                self._log_system("Using Legacy (exhaustive) ranker — recommended default, full accuracy.")
+            else:
+                cmd3 += ["--mab-screening-trials", str(ms), "--mab-final-trials", str(mf)]
+                self._log_system("Using MAB (adaptive) ranker — best for very large / imbalanced rule sets.")
+
+            rc = self._run_step(cmd3, "ranker — rule scoring & ranking")
+            if self._cancel_event.is_set() or not self._stage_succeeded(rc, s3, "ranker"):
+                self.after(0, lambda: self._finish(error=True))
+                return
+        else:
+            self._log_system("Skipping ranker — pipeline complete up to selected stages.")
 
         self._log_system(f"{'─' * 50}")
         self._log_system("Pipeline complete!")
-        self._log_system(f"Results: {s3}")
+        if self._run_ranker.get():
+            self._log_system(f"Results: {s3}")
         self._log_system(f"{'─' * 50}")
         self.after(0, self._finish)
 
