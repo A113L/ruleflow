@@ -87,7 +87,7 @@ The following scripts must be present in the working directory:
 | `rulest_v2.py` | Rule generation engine |
 | `concentrator.py` | Rule deduplication & cleaning |
 | `ranker.py` | Rule ranking & evaluation |
-| `rcr.py` | **GUI front-end** (optional) |
+| `RCR` | **GUI front-end** (optional) |
 
 ### Input Files
 
