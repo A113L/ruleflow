@@ -989,6 +989,14 @@ class RCRApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(APP_TITLE)
+        # ── Window / taskbar icon ─────────────────────────────────────────
+        try:
+            icon_path = os.path.join(SCRIPT_DIR, "rcr_icon_256.png")
+            if os.path.exists(icon_path):
+                self._icon_img = tk.PhotoImage(file=icon_path)
+                self.iconphoto(True, self._icon_img)
+        except Exception:
+            pass
         self.configure(bg=THEME.bg)
         self.geometry("1280x1000")
         self.minsize(980, 680)
