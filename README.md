@@ -113,17 +113,17 @@ wget https://raw.githubusercontent.com/A113L/concentrator/refs/heads/main/concen
 wget https://github.com/A113L/ranker/raw/refs/heads/main/ranker.py
 
 # Download the GUI front-end (optional)
-wget -O rcr.py https://github.com/A113L/ruleflow/raw/refs/heads/main/rcr
+wget -O rcr.py https://github.com/A113L/ruleflow/raw/refs/heads/main/RCR
 
 # Ensure Python scripts are executable
-chmod +x rulest_v2.py concentrator.py ranker.py rcr.py
+chmod +x rulest_v2.py concentrator.py ranker.py RCR
 
 # Run the CLI pipeline
 chmod +x ruleflow.sh
 ./ruleflow.sh
 
 # Or launch the GUI
-python rcr
+python RCR
 ```
 
 ---
@@ -149,7 +149,7 @@ You will be prompted for:
 Launch the graphical runner:
 
 ```bash
-python rcr
+python RCR
 ```
 
 **Workflow:**
