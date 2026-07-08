@@ -17,8 +17,10 @@ import re
 import queue
 import time
 import gc
+import hashlib
 from dataclasses import dataclass
-from typing import Optional, List, Tuple, Callable
+from typing import Optional, List, Tuple, Callable, Dict
+from collections import defaultdict
 
 # ── Platform bootstrap ─────────────────────────────────────────────────────
 
@@ -265,6 +267,242 @@ OOM_PATTERNS = re.compile(
     r"gpu memory allocation failed|killed\b",
     re.IGNORECASE,
 )
+
+
+# ==============================================================================
+#  CONCENTRATOR-COMPATIBLE RULE HELPERS  (copied from concentrator.py)
+# ==============================================================================
+
+_NEVER_PRODUCE_OPS = frozenset({'M', '4', '6', 'X', '<', '>', '!', '/', '(', ')', '=', '%', 'Q'})
+
+_OPERATOR_ARGS: Dict[str, List[str]] = {
+    ':': [], 'l': [], 'u': [], 'c': [], 'C': [], 't': [], 'r': [], 'd': [], 'f': [],
+    '{': [], '}': [], '[': [], ']': [], 'q': [], 'k': [], 'K': [], 'E': [],
+    'T': ['num'], 'p': ['num'], 'D': ['num'], 'z': ['num'], 'Z': ['num'], "'": ['num'],
+    '+': ['num'], '-': ['num'], '.': ['num'], ',': ['num'], 'L': ['num'], 'R': ['num'],
+    'y': ['num'], 'Y': ['num'], '<': ['num'], '>': ['num'], '_': ['num'],
+    'x': ['num', 'num'], 'O': ['num', 'num'], '*': ['num', 'num'],
+    '$': ['char'], '^': ['char'], '@': ['char'], 'e': ['char'],
+    's': ['char', 'char'],
+    'i': ['num', 'char'], 'o': ['num', 'char'], '3': ['num', 'char'],
+}
+
+
+def _build_token_regex() -> re.Pattern:
+    patterns = []
+    for op, args in _OPERATOR_ARGS.items():
+        escaped = re.escape(op)
+        arg_pat = ''.join('[0-9A-Z]' if a == 'num' else '[ -~]' for a in args)
+        patterns.append(escaped + arg_pat)
+    patterns.sort(key=len, reverse=True)
+    return re.compile('|'.join(patterns))
+
+
+_TOKEN_REGEX = _build_token_regex()
+
+
+def _has_banned_op(rule: str) -> bool:
+    tokens = _TOKEN_REGEX.findall(rule)
+    return any(t[0] in _NEVER_PRODUCE_OPS for t in tokens)
+
+
+def _i36(s: str) -> int:
+    return int(s, 36)
+
+
+def is_valid_hashcat_rule(rule: str) -> bool:
+    if _has_banned_op(rule):
+        return False
+    if not rule.strip():
+        return False
+    pos = 0
+    cnt = 0
+    n = len(rule)
+
+    def is_digit(c: str) -> bool:
+        return ('0' <= c <= '9') or ('A' <= c <= 'Z')
+
+    while pos < n:
+        c = rule[pos]
+        if c == ' ':
+            pos += 1
+            continue
+        if c in ('p', 'z', 'Z'):
+            cnt += 1
+            pos += 1
+            if pos < n and is_digit(rule[pos]):
+                pos += 1
+            continue
+        if c in (':', 'l', 'u', 'c', 'C', 't', 'r', 'd', 'f', 'q', 'k', 'K',
+                 'E', '{', '}', '[', ']'):
+            pos += 1
+            cnt += 1
+            continue
+        if c in ('T', 'D', 'L', 'R', '+', '-', '.', ',', "'", 'y', 'Y', '_'):
+            pos += 1
+            if pos >= n or not is_digit(rule[pos]):
+                return False
+            pos += 1
+            cnt += 1
+            continue
+        if c in ('i', 'o', '3'):
+            pos += 1
+            if pos >= n or not is_digit(rule[pos]):
+                return False
+            pos += 1
+            if pos >= n:
+                return False
+            pos += 1
+            cnt += 1
+            continue
+        if c in ('x', '*', 'O'):
+            pos += 1
+            if pos >= n or not is_digit(rule[pos]):
+                return False
+            pos += 1
+            if pos >= n or not is_digit(rule[pos]):
+                return False
+            pos += 1
+            cnt += 1
+            continue
+        if c == 's':
+            pos += 1
+            if pos + 1 >= n:
+                return False
+            pos += 2
+            cnt += 1
+            continue
+        if c in ('@', 'e', '$', '^'):
+            pos += 1
+            if pos >= n:
+                return False
+            pos += 1
+            cnt += 1
+            continue
+        return False
+    return 1 <= cnt <= 255
+
+
+# ── Simplified RuleEngine (from concentrator) ────────────────────────────────
+
+class _RuleEngine:
+    def __init__(self, rules: List[str]) -> None:
+        self._token_lists = [_TOKEN_REGEX.findall(r) for r in rules]
+        self.memorized = ''
+
+    def apply(self, string: str) -> str:
+        word = string
+        self.memorized = ''
+        for tokens in self._token_lists:
+            for token in tokens:
+                try:
+                    word = self._dispatch(token, word)
+                except Exception:
+                    pass
+        return word
+
+    def _dispatch(self, token: str, word: str) -> str:
+        op = token[0]
+        args = token[1:]
+        if op == ':':
+            return word
+        elif op == 'l':
+            return word.lower()
+        elif op == 'u':
+            return word.upper()
+        elif op == 'c':
+            return word.capitalize()
+        elif op == 'C':
+            return word.capitalize().swapcase()
+        elif op == 't':
+            return word.swapcase()
+        elif op == 'T':
+            n = _i36(args[0])
+            if n >= len(word):
+                return word
+            return word[:n] + word[n].swapcase() + word[n + 1:]
+        elif op == 'r':
+            return word[::-1]
+        elif op == 'd':
+            return word + word
+        elif op == 'p':
+            if not args:
+                return word
+            return word * (_i36(args[0]) + 1)
+        elif op == 'f':
+            return word + word[::-1]
+        elif op == '{':
+            return (word[1:] + word[0]) if word else word
+        elif op == '}':
+            return (word[-1] + word[:-1]) if word else word
+        elif op == '$':
+            return word + args[0]
+        elif op == '^':
+            return args[0] + word
+        elif op == '[':
+            return word[1:]
+        elif op == ']':
+            return word[:-1]
+        elif op == 'D':
+            n = _i36(args[0])
+            return word[:n] + word[n + 1:] if n < len(word) else word
+        elif op == 'x':
+            n, m = _i36(args[0]), _i36(args[1])
+            if n < 0 or m < 0:
+                return word
+            return word[n:n + m]
+        elif op == 'O':
+            n, m = _i36(args[0]), _i36(args[1])
+            if n < 0 or m < 0 or n >= len(word):
+                return word
+            return word[:n] + word[n + m:]
+        elif op == 'i':
+            pos = min(_i36(args[0]), len(word))
+            return word[:pos] + args[1] + word[pos:]
+        elif op == 'o':
+            pos = _i36(args[0])
+            return word[:pos] + args[1] + word[pos + 1:] if pos < len(word) else word
+        elif op == "'":
+            return word[:_i36(args[0])]
+        elif op == 's':
+            return word.replace(args[0], args[1])
+        elif op == '@':
+            return word.replace(args[0], '')
+        elif op == 'z':
+            n = _i36(args[0])
+            return word[0] * n + word if word else ''
+        elif op == 'Z':
+            n = _i36(args[0])
+            return word + word[-1] * n if word else ''
+        elif op == 'q':
+            return ''.join(c * 2 for c in word)
+        elif op == 'E':
+            out = []
+            cap = True
+            for ch in word:
+                if cap and ch.islower():
+                    out.append(ch.upper())
+                elif not cap and ch.isupper():
+                    out.append(ch.lower())
+                else:
+                    out.append(ch)
+                cap = (ch == ' ')
+            return ''.join(out)
+        elif op == 'e':
+            sep = args[0]
+            out = []
+            cap = True
+            for ch in word:
+                if cap and ch.islower():
+                    out.append(ch.upper())
+                elif not cap and ch.isupper():
+                    out.append(ch.lower())
+                else:
+                    out.append(ch)
+                cap = (ch == sep)
+            return ''.join(out)
+        else:
+            return word
 
 
 # ── Memory Monitor ─────────────────────────────────────────────────────────
@@ -776,6 +1014,17 @@ class RCRApp(tk.Tk):
         self._run_conc = tk.BooleanVar(value=True)
         self._run_ranker = tk.BooleanVar(value=True)
 
+        # ── Step 3b — Advanced concentrator filtering variables ─────────────
+        self._conc_min_occ_var = tk.BooleanVar(value=False)
+        self._conc_min_occ_val = tk.StringVar(value="10")
+        self._conc_max_rules_var = tk.BooleanVar(value=False)
+        self._conc_max_rules_val = tk.StringVar(value="10000")
+        self._conc_func_red_var = tk.BooleanVar(value=False)
+        self._conc_inv_var = tk.BooleanVar(value=False)
+        self._conc_inv_val = tk.StringVar(value="1000")
+        self._conc_hashcat_var = tk.BooleanVar(value=False)
+        self._conc_hashcat_mode = tk.StringVar(value="cpu")
+
         self._build_ui()
         self._set_mode("balanced")
         self._start_polling()
@@ -1019,6 +1268,87 @@ class RCRApp(tk.Tk):
                  "Compact: rules on single lines — slightly faster for hashcat to load.",
             bg=THEME.card, fg=THEME.fg2, font=ui_font(9), justify="left"
         ).pack(anchor="w", pady=(8, 0))
+
+        # ── Step 3b — Advanced Filtering ──────────────────────────────
+        adv = Section(wrap, "Step 3b — Advanced Filtering (Concentrator Post-Processing)")
+        adv.pack(fill="x", pady=(10, 0))
+
+        # (1) Min occurrence
+        r1 = tk.Frame(adv.body, bg=THEME.card)
+        r1.pack(fill="x", pady=3)
+        tk.Checkbutton(
+            r1, text="(1) Filter by MINIMUM OCCURRENCE", variable=self._conc_min_occ_var,
+            bg=THEME.card, fg=THEME.fg, selectcolor=THEME.surface,
+            activebackground=THEME.card, activeforeground=THEME.fg, font=ui_font(9)
+        ).pack(side="left")
+        tk.Entry(
+            r1, textvariable=self._conc_min_occ_val, bg=THEME.surface, fg=THEME.accent,
+            insertbackground=THEME.accent, relief="flat", bd=0,
+            highlightbackground=THEME.border, highlightthickness=1,
+            font=mono_font(), width=8, justify="right"
+        ).pack(side="left", padx=(8, 0))
+        tk.Label(r1, text="times", bg=THEME.card, fg=THEME.fg2, font=ui_font(8)).pack(side="left")
+
+        # (2) Max rules
+        r2 = tk.Frame(adv.body, bg=THEME.card)
+        r2.pack(fill="x", pady=3)
+        tk.Checkbutton(
+            r2, text="(2) Filter by MAXIMUM NUMBER OF RULES (top N)", variable=self._conc_max_rules_var,
+            bg=THEME.card, fg=THEME.fg, selectcolor=THEME.surface,
+            activebackground=THEME.card, activeforeground=THEME.fg, font=ui_font(9)
+        ).pack(side="left")
+        tk.Entry(
+            r2, textvariable=self._conc_max_rules_val, bg=THEME.surface, fg=THEME.accent,
+            insertbackground=THEME.accent, relief="flat", bd=0,
+            highlightbackground=THEME.border, highlightthickness=1,
+            font=mono_font(), width=8, justify="right"
+        ).pack(side="left", padx=(8, 0))
+
+        # (3) Functional redundancy
+        r3 = tk.Frame(adv.body, bg=THEME.card)
+        r3.pack(fill="x", pady=3)
+        tk.Checkbutton(
+            r3, text="(3) Filter by FUNCTIONAL REDUNDANCY  [RAM intensive]", variable=self._conc_func_red_var,
+            bg=THEME.card, fg=THEME.fg, selectcolor=THEME.surface,
+            activebackground=THEME.card, activeforeground=THEME.fg, font=ui_font(9)
+        ).pack(side="left")
+        tk.Label(
+            r3, text="— keeps one rule per functional signature", bg=THEME.card, fg=THEME.fg2, font=ui_font(8)
+        ).pack(side="left", padx=(8, 0))
+
+        # (4) Inverse mode
+        r4 = tk.Frame(adv.body, bg=THEME.card)
+        r4.pack(fill="x", pady=3)
+        tk.Checkbutton(
+            r4, text="(4) INVERSE MODE – keep rules below the cut-off rank", variable=self._conc_inv_var,
+            bg=THEME.card, fg=THEME.fg, selectcolor=THEME.surface,
+            activebackground=THEME.card, activeforeground=THEME.fg, font=ui_font(9)
+        ).pack(side="left")
+        tk.Entry(
+            r4, textvariable=self._conc_inv_val, bg=THEME.surface, fg=THEME.accent,
+            insertbackground=THEME.accent, relief="flat", bd=0,
+            highlightbackground=THEME.border, highlightthickness=1,
+            font=mono_font(), width=8, justify="right"
+        ).pack(side="left", padx=(8, 0))
+
+        # (5) Hashcat cleanup
+        r5 = tk.Frame(adv.body, bg=THEME.card)
+        r5.pack(fill="x", pady=3)
+        tk.Checkbutton(
+            r5, text="(5) HASHCAT CLEANUP – validate rules", variable=self._conc_hashcat_var,
+            bg=THEME.card, fg=THEME.fg, selectcolor=THEME.surface,
+            activebackground=THEME.card, activeforeground=THEME.fg, font=ui_font(9)
+        ).pack(side="left")
+        tk.Radiobutton(
+            r5, text="CPU", variable=self._conc_hashcat_mode, value="cpu",
+            bg=THEME.card, fg=THEME.fg, selectcolor=THEME.surface,
+            activebackground=THEME.card, activeforeground=THEME.fg, font=ui_font(8)
+        ).pack(side="left", padx=(8, 0))
+        tk.Radiobutton(
+            r5, text="GPU", variable=self._conc_hashcat_mode, value="gpu",
+            bg=THEME.card, fg=THEME.fg, selectcolor=THEME.surface,
+            activebackground=THEME.card, activeforeground=THEME.fg, font=ui_font(8)
+        ).pack(side="left", padx=(4, 0))
 
         rk = Section(wrap, "Step 4 — Ranker Strategy")
         rk.pack(fill="x")
@@ -1310,7 +1640,7 @@ class RCRApp(tk.Tk):
         self._configure_ttk_styles()
 
         # The log panel's text background isn't part of the shared palette
-        # (it's intentionally darker/lighter than the surrounding chrome).
+        # (it is intentionally darker/lighter than the surrounding chrome).
         if self._log.cget("bg") == old.log_bg:
             self._log.config(bg=new.log_bg)
 
@@ -1540,6 +1870,39 @@ class RCRApp(tk.Tk):
             else:
                 self._mem_label.config(fg=THEME.fg2)
         self.after(2000, self._update_memory)
+
+    # ── Concentrator Post-Processing Filters ─────────────────────────
+    #
+    # v0.6: The Step-3b filters (1-5) used to be reimplemented here in
+    # Python, separately from concentrator.py's own logic — which is why
+    # they didn't actually reflect what concentrator does (different
+    # occurrence counting, a stripped-down functional-redundancy check,
+    # etc). They are now passed straight through to concentrator.py's own
+    # --filter-min-occ / --filter-max-rules / --filter-func-redundancy /
+    # --filter-inverse / --filter-hashcat-cleanup CLI flags (see
+    # _concentrator_filter_args() and the Stage 2 block in
+    # _pipeline_thread), so RCR always uses concentrator's real, single
+    # source of truth for these filters. Each flag is independent — only
+    # the ones the user checked are passed — and concentrator applies
+    # them in the fixed order 1→5 in a single pass so occurrence counts
+    # stay consistent from one filter to the next.
+
+    def _concentrator_filter_args(self) -> List[str]:
+        """Build the --filter-* CLI args for concentrator.py from whichever
+        Step-3b checkboxes are enabled. Only enabled options are included,
+        so each of the 5 filters is executed independently."""
+        conc_args: List[str] = []
+        if self._conc_min_occ_var.get():
+            conc_args += ["--filter-min-occ", self._conc_min_occ_val.get()]
+        if self._conc_max_rules_var.get():
+            conc_args += ["--filter-max-rules", self._conc_max_rules_val.get()]
+        if self._conc_func_red_var.get():
+            conc_args += ["--filter-func-redundancy", "--yes"]
+        if self._conc_inv_var.get():
+            conc_args += ["--filter-inverse", self._conc_inv_val.get()]
+        if self._conc_hashcat_var.get():
+            conc_args += ["--filter-hashcat-cleanup", self._conc_hashcat_mode.get()]
+        return conc_args
 
     # ── Pipeline Execution ────────────────────────────────────────
 
@@ -1805,12 +2168,20 @@ class RCRApp(tk.Tk):
             self.after(0, lambda: self._status_label.config(text="Stage 2/3: concentrator…"))
 
             conc_format = "expanded" if self._concfmt_var.get() else "line"
-            rc = self._run_step([
+            filter_args = self._concentrator_filter_args()
+            conc_cmd = [
                 py, conc_py,
                 "-p", s1,
                 "--output_base_name", s2b,
                 "--output-format", conc_format,
-            ], "concentrator — rule optimization")
+            ] + filter_args
+
+            if filter_args:
+                self._log_system(
+                    "Step 3b advanced filters enabled — concentrator will run them "
+                    "(in order 1→5) as part of this stage."
+                )
+            rc = self._run_step(conc_cmd, "concentrator — rule optimization + advanced filtering")
 
             if self._cancel_event.is_set():
                 self.after(0, lambda: self._finish(error=True))
@@ -1839,6 +2210,7 @@ class RCRApp(tk.Tk):
 
             cleaned = matches[0]
             self._log_system(f"Using cleaned rules: {cleaned}")
+
             gc.collect()
         else:
             # If concentrator is skipped, pass the rules file directly to ranker
