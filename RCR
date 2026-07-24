@@ -745,7 +745,8 @@ class ModernButton(tk.Button):
         self.variant = variant
         colors = {
             "primary": (THEME.accent, "#0a0a0a", THEME.accent_hover),
-            "danger": (THEME.danger, "#0a0a0a", "#ff7b72"),
+            "success": (THEME.success, "#000000", "#4fd166"),
+            "danger": (THEME.danger, "#000000", "#ff7b72"),
             "secondary": (THEME.surface, THEME.fg, THEME.elevated),
             "ghost": (THEME.bg, THEME.fg2, THEME.surface),
         }
@@ -1626,7 +1627,7 @@ class RCRApp(tk.Tk):
         self._stop_btn.config(state="disabled")
 
         self._run_btn = ModernButton(
-            btn_box, text="▶  Run Pipeline", command=self._run, variant="primary",
+            btn_box, text="▶  Run", command=self._run, variant="success",
             font=ui_font(11, "bold"), padx=28, pady=12
         )
         self._run_btn.pack(side="right")
@@ -2049,6 +2050,14 @@ class RCRApp(tk.Tk):
         self._process = ManagedProcess()
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
+        # On Windows, a subprocess whose stdout is piped (not attached to a
+        # real console) falls back to the system ANSI codepage (e.g. cp1252)
+        # instead of UTF-8. Banner art / non-ASCII text in the child script
+        # then raises UnicodeEncodeError. Forcing UTF-8 mode + I/O encoding
+        # here makes the child behave the same on Windows as on Linux.
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
+        env["PYTHONLEGACYWINDOWSSTDIO"] = "0"
         # When stdout is piped (no real TTY), progress-bar libraries like
         # tqdm can't detect a terminal width and fall back to a narrow
         # default, truncating things like the GA/minimizer speed readout.
@@ -2135,6 +2144,43 @@ class RCRApp(tk.Tk):
         conc_py = os.path.join(SCRIPT_DIR, "concentrator.py")
         rank_py = os.path.join(SCRIPT_DIR, "ranker.py")
         dev_args = self._device_args()
+
+        # ── Dependency pre-flight ────────────────────────────────────
+        # rulest_v2.py / concentrator.py / ranker.py import third-party
+        # packages (e.g. tqdm) that may not be installed for `py`
+        # (sys.executable — the interpreter running RCR itself). Failing
+        # fast with a clear message avoids opaque ModuleNotFoundError
+        # tracebacks from inside a subprocess a stage in.
+        required_modules = ["tqdm"]
+        missing = []
+        for mod in required_modules:
+            check = subprocess.run(
+                [py, "-c", f"import {mod}"],
+                capture_output=True, text=True
+            )
+            if check.returncode != 0:
+                missing.append(mod)
+
+        if missing:
+            self._log_system(f"Missing required Python packages: {', '.join(missing)}")
+            self._log_system(f"Attempting automatic install via: {py} -m pip install {' '.join(missing)}")
+            install = subprocess.run(
+                [py, "-m", "pip", "install", *missing],
+                capture_output=True, text=True
+            )
+            if install.returncode != 0:
+                self._log_error(
+                    f"Automatic install failed. Please run manually:\n"
+                    f"    {py} -m pip install {' '.join(missing)}"
+                )
+                if install.stdout:
+                    self._log_muted(install.stdout.strip()[-1000:])
+                if install.stderr:
+                    self._log_muted(install.stderr.strip()[-1000:])
+                self.after(0, lambda: self._finish(error=True))
+                return
+            else:
+                self._log_system(f"Installed successfully: {', '.join(missing)}")
 
         # ── Stage 1: rulest ─────────────────────────────────────────
         s1 = os.path.join(outdir, "stage1_raw.rule")
