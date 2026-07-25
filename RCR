@@ -745,7 +745,8 @@ class ModernButton(tk.Button):
         self.variant = variant
         colors = {
             "primary": (THEME.accent, "#0a0a0a", THEME.accent_hover),
-            "danger": (THEME.danger, "#0a0a0a", "#ff7b72"),
+            "success": (THEME.success, "#000000", "#4fd166"),
+            "danger": (THEME.danger, "#000000", "#ff7b72"),
             "secondary": (THEME.surface, THEME.fg, THEME.elevated),
             "ghost": (THEME.bg, THEME.fg2, THEME.surface),
         }
@@ -1626,7 +1627,7 @@ class RCRApp(tk.Tk):
         self._stop_btn.config(state="disabled")
 
         self._run_btn = ModernButton(
-            btn_box, text="▶  Run Pipeline", command=self._run, variant="primary",
+            btn_box, text="▶  Run", command=self._run, variant="success",
             font=ui_font(11, "bold"), padx=28, pady=12
         )
         self._run_btn.pack(side="right")
