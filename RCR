@@ -1841,6 +1841,13 @@ class RCRApp(tk.Tk):
 
         self.after(50, self._poll_loop)
 
+    # Hard cap on how many lines the log Text widget is allowed to hold.
+    # Without this, long runs (tqdm progress bars alone can emit thousands
+    # of \r-updates) grow the widget's internal text/tag storage without
+    # bound for the lifetime of the app — a slow but real memory leak.
+    MAX_LOG_LINES = 8000
+    _TRIM_TO_LINES = 6000  # trim back down to this many lines once exceeded
+
     def _apply_log_entry(self, kind: str, content: str):
         self._log.config(state="normal")
 
@@ -1865,6 +1872,11 @@ class RCRApp(tk.Tk):
         else:
             self._log.insert("end", content)
             self._log_line_count += content.count("\n")
+
+        if self._log_line_count > self.MAX_LOG_LINES:
+            excess = self._log_line_count - self._TRIM_TO_LINES
+            self._log.delete("1.0", f"{excess + 1}.0")
+            self._log_line_count = self._TRIM_TO_LINES
 
         if self._autoscroll:
             self._log.see("end")
