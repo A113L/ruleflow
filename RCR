@@ -2096,11 +2096,22 @@ class RCRApp(tk.Tk):
             else:
                 dot.config(bg=THEME.surface, fg=THEME.fg2)
 
-    def _device_args(self) -> List[str]:
+    def _device_args(self, single_only: bool = False) -> List[str]:
         # Multiple individual GPUs checked (via "Select all GPUs" or by hand)
         # take priority over the single combobox selection.
         selected_ids = [dev_id for dev_id, var in self._dev_check_vars.items() if var.get()]
         if selected_ids:
+            if single_only:
+                # Caller (e.g. ranker.py) only supports a single OpenCL device
+                # (--device takes an int). Use the first checked GPU and warn
+                # if the user actually selected more than one.
+                if len(selected_ids) > 1:
+                    self._log_system(
+                        f"Note: ranker does not support multi-GPU yet — using GPU "
+                        f"{selected_ids[0]} only for this stage (rulest will still use all "
+                        f"{len(selected_ids)} selected GPUs)."
+                    )
+                return ["--device", selected_ids[0]]
             return ["--device", ",".join(selected_ids)]
 
         dev_display = self._dev_var.get()
@@ -2228,6 +2239,7 @@ class RCRApp(tk.Tk):
         conc_py = os.path.join(SCRIPT_DIR, "concentrator.py")
         rank_py = os.path.join(SCRIPT_DIR, "ranker.py")
         dev_args = self._device_args()
+        single_dev_args = self._device_args(single_only=True)
 
         # ── Dependency pre-flight ────────────────────────────────────
         # rulest_v2.py / concentrator.py / ranker.py import third-party
@@ -2362,7 +2374,7 @@ class RCRApp(tk.Tk):
             self.after(0, lambda: self._status_label.config(text="Stage 3/3: ranker (this may take a while)…"))
 
             cmd3 = [py, rank_py, "-w", base_wl, "-r", cleaned, "-c", cracked, "-o", s3,
-                    "-k", str(rk), "--preset", preset] + dev_args
+                    "-k", str(rk), "--preset", preset] + single_dev_args
             if legacy:
                 cmd3.append("--legacy")
                 self._log_system("Using Legacy (exhaustive) ranker — recommended default, full accuracy.")
