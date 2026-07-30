@@ -1017,6 +1017,9 @@ class RCRApp(tk.Tk):
 
         self._devices: List[Tuple[str, str]] = [("auto", "Auto-detect (recommended)")]
         self._dev_var = tk.StringVar(value="auto")
+        self._dev_check_vars: Dict[str, tk.BooleanVar] = {}   # device_id -> selected?
+        self._dev_select_all_var = tk.BooleanVar(value=False)
+        self._dev_checks_frame = None  # populated in _build_setup_tab
 
         # Stage selection variables
         self._run_rulest = tk.BooleanVar(value=True)
@@ -1245,6 +1248,72 @@ class RCRApp(tk.Tk):
             text="Click 'Scan' to detect OpenCL hardware. Auto-detect works for most setups.",
             bg=THEME.card, fg=THEME.fg2, font=ui_font(9), anchor="w")
         self._dev_status.pack(fill="x", pady=(8, 0))
+
+        # ── Multi-GPU selection ────────────────────────────────────
+        # Lets the user run against several devices at once instead of
+        # picking a single one from the combobox above. Only meaningful
+        # once a scan has found more than one device.
+        multi = tk.Frame(device.body, bg=THEME.card)
+        multi.pack(fill="x", pady=(10, 0))
+        tk.Frame(multi, bg=THEME.border, height=1).pack(fill="x", pady=(0, 8))
+
+        select_all_row = tk.Frame(multi, bg=THEME.card)
+        select_all_row.pack(fill="x")
+        tk.Checkbutton(
+            select_all_row, text="Select all GPUs", variable=self._dev_select_all_var,
+            bg=THEME.card, fg=THEME.fg, selectcolor=THEME.surface,
+            activebackground=THEME.card, activeforeground=THEME.fg, font=ui_font(9, "bold"),
+            command=self._on_select_all_devices
+        ).pack(side="left")
+
+        self._dev_checks_frame = tk.Frame(multi, bg=THEME.card)
+        self._dev_checks_frame.pack(fill="x", pady=(4, 0))
+        self._rebuild_device_checkboxes()
+
+    def _rebuild_device_checkboxes(self):
+        """(Re)build one checkbox per detected GPU (excluding 'auto') inside
+        self._dev_checks_frame, preserving any existing selections."""
+        for child in self._dev_checks_frame.winfo_children():
+            child.destroy()
+
+        real_devices = [d for d in self._devices if d[0] != "auto"]
+        if not real_devices:
+            tk.Label(
+                self._dev_checks_frame, text="No individual devices detected yet — click 'Scan'.",
+                bg=THEME.card, fg=THEME.fg2, font=ui_font(8)
+            ).pack(anchor="w")
+            return
+
+        old_vars = self._dev_check_vars
+        self._dev_check_vars = {}
+        for dev_id, label in real_devices:
+            var = tk.BooleanVar(value=old_vars.get(dev_id, tk.BooleanVar(value=False)).get())
+            self._dev_check_vars[dev_id] = var
+            tk.Checkbutton(
+                self._dev_checks_frame, text=label, variable=var,
+                bg=THEME.card, fg=THEME.fg, selectcolor=THEME.surface,
+                activebackground=THEME.card, activeforeground=THEME.fg, font=ui_font(9),
+                command=self._on_individual_device_toggle
+            ).pack(anchor="w")
+
+        self._sync_select_all_var()
+
+    def _on_select_all_devices(self):
+        """Handler for the 'Select all GPUs' master checkbox."""
+        checked = self._dev_select_all_var.get()
+        for var in self._dev_check_vars.values():
+            var.set(checked)
+
+    def _on_individual_device_toggle(self):
+        """Keep the master 'Select all GPUs' checkbox in sync when an
+        individual device box is (un)checked by hand."""
+        self._sync_select_all_var()
+
+    def _sync_select_all_var(self):
+        if self._dev_check_vars and all(v.get() for v in self._dev_check_vars.values()):
+            self._dev_select_all_var.set(True)
+        else:
+            self._dev_select_all_var.set(False)
 
     def _on_stage_toggle(self):
         """Show or hide the external rules file picker depending on whether
@@ -1733,7 +1802,14 @@ class RCRApp(tk.Tk):
         clean = strip_ansi(raw)
         devices = [("auto", "Auto-detect (recommended)")]
         for line in clean.splitlines():
-            m = re.search(r'\[?\b(\d+)\]?\s*[:\-]?\s*(.+)', line)
+            # Only match actual device-list lines as printed by
+            # rulest_v2.py's list_devices(), e.g. "  0: GeForce RTX 3090 (GPU) — NVIDIA CUDA".
+            # Anchoring to the start of the line (after optional whitespace)
+            # avoids false hits like the "Tip: ... run on all 2 GPU(s) in
+            # parallel" summary line, which previously got misparsed as a
+            # bogus device and caused "index out of range" errors when
+            # selected for multi-GPU runs.
+            m = re.match(r'\s*(\d+):\s*(.+)', line)
             if m and any(k in line.lower() for k in ["nvidia", "amd", "intel", "gpu", "geforce", "radeon"]):
                 dev_id = m.group(1)
                 desc = m.group(2).strip()
@@ -1748,6 +1824,8 @@ class RCRApp(tk.Tk):
         self._devices = devices
         self._dev_combo["values"] = [d[1] for d in devices]
         self._dev_combo.set(devices[0][1])
+        if self._dev_checks_frame is not None:
+            self._rebuild_device_checkboxes()
         count = len(devices) - 1
         if count > 0:
             self._dev_status.config(text=f"Found {count} device(s). Auto-detect recommended.", fg=THEME.success)
@@ -2019,6 +2097,12 @@ class RCRApp(tk.Tk):
                 dot.config(bg=THEME.surface, fg=THEME.fg2)
 
     def _device_args(self) -> List[str]:
+        # Multiple individual GPUs checked (via "Select all GPUs" or by hand)
+        # take priority over the single combobox selection.
+        selected_ids = [dev_id for dev_id, var in self._dev_check_vars.items() if var.get()]
+        if selected_ids:
+            return ["--device", ",".join(selected_ids)]
+
         dev_display = self._dev_var.get()
         if not dev_display or dev_display.lower().startswith("auto"):
             return []
